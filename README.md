@@ -1,4 +1,4 @@
-# MOSAIC — a *set-based* LLM watermark (content-addressed fountain codes + belief propagation)
+# MOSAIC: A *set-based* LLM watermark (content-addressed fountain codes + belief propagation)
 
 Every prior multi-bit text watermark reads the
 token stream as an **ordered sequence** (a time signal). MOSAIC treats it as an
