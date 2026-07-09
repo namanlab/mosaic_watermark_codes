@@ -1,0 +1,9 @@
+torch
+transformers
+accelerate
+numpy
+pyarrow
+matplotlib
+sentencepiece
+protobuf
+mauve-text
