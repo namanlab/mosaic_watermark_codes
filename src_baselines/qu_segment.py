@@ -14,10 +14,15 @@ and Reed-Solomon decodes it to correct the remaining symbol errors and return th
 payload. This error-correction stage is what sustains a high match rate at large
 payloads.
 
-The earlier version of this file used 1/16-of-vocab count cells and no error
-correction; on the green-list layer that partition is too small to bias
-reliably at delta = 6, which collapsed the match rate at large payloads. The
-balanced half-vocab green list and the RS code restore the reported behavior.
+Two fixes relative to earlier versions of this file, both needed to reproduce
+the reported accuracy: (1) 1/16-of-vocab count cells were replaced by a balanced
+half-vocab green list per symbol value, and hard-decision voting by Reed-Solomon
+decoding; (2) the segment index is a keyed hash of the POSITION rather than of
+the previous token, mirroring Qu et al.'s balanced token-to-segment assignment
+(balance_hash / tok_assignment in their release). Hashing the previous token
+funnels every occurrence of a frequent context into one segment, starving other
+segments; the starved segments decode at chance and exceed the RS correction
+budget, which is what depressed the match rate at 32 and 48 bits.
 """
 import numpy as np
 
@@ -62,12 +67,18 @@ class QuSegmentWatermark:
             self._cw_key = key
         return self._cw
 
-    def _segment(self, prev_id: int) -> int:
-        return self.prf_seg.scalar(prev_id) % self.n_code
+    def _segment(self, pos: int) -> int:
+        # Keyed position -> segment map. Qu et al. balance the assignment so
+        # every segment receives roughly equal token mass (their balance_hash /
+        # tok_assignment machinery); a keyed hash of the position reproduces
+        # that balance. Hashing the previous token instead (an earlier version
+        # of this file) funnels every occurrence of a frequent context token
+        # into one segment, starving others and overwhelming the RS correction.
+        return self.prf_seg.scalar(pos) % self.n_code
 
     # ---------------------------------------------------------- embedding ---
     def favored_set(self, prev_id: int, pos: int, message) -> np.ndarray:
-        j = self._segment(prev_id)
+        j = self._segment(pos)
         v = self._codeword(message)[j]
         return self.prf_green.salted_over_vocab(prev_id, j * N_VALUES + v) < self.thr
 
@@ -75,9 +86,9 @@ class QuSegmentWatermark:
     def detect(self, gen_ids, prompt_ids):
         scores = np.zeros((self.n_code, N_VALUES), dtype=np.int64)
         prev = prompt_ids[-1]
-        for tok in gen_ids:
+        for pos, tok in enumerate(gen_ids):
             if tok < self.vocab_size:
-                j = self._segment(prev)
+                j = self._segment(pos)
                 salts = np.arange(j * N_VALUES, j * N_VALUES + N_VALUES)
                 green = self.prf_green.token_over_salts(prev, tok, salts) < self.thr
                 scores[j] += green
