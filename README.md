@@ -211,6 +211,24 @@ Each result file is `results/<name>_<model>.json` with:
 }
 ```
 
+### Tables and figures
+
+Once the result JSONs are in `results/`, regenerate every paper table and figure:
+
+```bash
+cd results
+Rscript make_paper_assets.R      # writes paper/tables/*.tex and paper/figures/*.pdf
+```
+
+This reads only the `aggregate` blocks (plus a streamed pass over `samples` for the
+bootstrap CI) and needs R with `jsonlite`, `ggplot2`, `scales`, and `dplyr`. The
+`+/-95%` column of the main-results table is a nonparametric bootstrap confidence
+interval over the prompts; `make_paper_assets.R` computes it by invoking
+`compute_match_ci.py` (needs `python3` + `numpy`), which caches
+`results/main_bootstrap_ci.json` and reruns whenever the result JSON changes.
+
+See [`REPRODUCE.md`](REPRODUCE.md) for the end-to-end reproduction walkthrough.
+
 ---
 
 ## The six baselines
