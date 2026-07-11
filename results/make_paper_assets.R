@@ -137,7 +137,7 @@ main <- main[order(main$k), ]
 # --- main results table (with bootstrap CI half-width over prompts) ---
 ci_half <- bootstrap_match_ci(f_main, main$k)
 rows <- apply(main, 1, function(r) sprintf(
-  "%d & %.1f & %.1f & %.1f & %s  \\\\",
+  "%d & %.1f & %.2f & %.1f & %s  \\\\",
   as.integer(r["k"]), r["match"], ci_half[as.character(as.integer(r["k"]))],
   r["bitacc"], sci_tex(r["medp"])))
 tab <- c(
