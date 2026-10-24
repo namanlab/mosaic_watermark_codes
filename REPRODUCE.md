@@ -49,7 +49,7 @@ python run_experiments_full.py --experiment quality  --model meta-llama/Llama-2-
 SUBSET_FRAC=0.1 python run_experiments_full.py --experiment robust --model meta-llama/Llama-2-7b-hf
 SUBSET_FRAC=0.1 python run_experiments_full.py --experiment sweep  --model meta-llama/Llama-2-7b-hf
 
-# The six baselines on the first 1,000 prompts
+# The baselines on the first 1,000 prompts (Cohen et al. as cohen and cohen_adapted)
 MAIN_MAX_PROMPTS=1000 python run_baseline_experiments.py --method all --model meta-llama/Llama-2-7b-hf
 ```
 
@@ -115,7 +115,8 @@ The bootstrap intervals use 10,000 resamples over prompts with seed 20240611.
 - `src/fountain_bp.py`     fountain/LT parity layer and BP
 - `src/conv_code.py`       earlier convolutional code, kept for reference
 - `src_baselines/`         the six baselines on the shared green-list layer (Yoo,
-                           Qu, Fernandez, Wang, Cohen, Janas); `qu_balance.py` and
+                           Qu, Fernandez, Wang, Cohen, Janas), Cohen et al. in two
+                           variants (`cohen.py`, `cohen_adapted.py`); `qu_balance.py` and
                            `reed_solomon.py` serve the Qu et al. method
 - `results/`               the analysis pipeline listed above
 

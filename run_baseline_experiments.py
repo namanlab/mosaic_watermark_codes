@@ -9,7 +9,8 @@ run under the EXACT protocol of run_experiments_full.py stage 1:
   tokens    200 new tokens per generation
   detection model-free, from the generated token ids
 
-Methods (see src_baselines/), all six from Janas et al. Table 1:
+Methods (see src_baselines/), the six from Janas et al. Table 1, with Cohen et al.
+in two variants:
   mpac    Yoo et al., NAACL 2024      position allocation, majority vote
   qu      Qu et al., USENIX Sec 2025  released RSBH method: balanced previous-token
                                       segment map, RS [n,k] over GF(2^m), COUNT argmax
@@ -18,6 +19,9 @@ Methods (see src_baselines/), all six from Janas et al. Table 1:
   wang    Wang et al., ICLR 2024      message hash, 2^k scan (k <= 20 here)
   cohen   Cohen et al., S&P 2025      Figure 2: fresh random bit per 21-token block,
                                       2L zero-bit keys, whole-text windowed detection
+  cohen_adapted                       Cohen et al. adapted (the earlier runs): keyed
+                                      position-to-bit schedule known to the detector,
+                                      per-bit argmax between the two keys
   janas   Janas et al., 2025          Lagrange line over GF(2^t) + MCP decode
 
 Usage:
@@ -53,6 +57,7 @@ from src_baselines.qu_segment import QuSegmentWatermark         # noqa: E402
 from src_baselines.cyclic_shift import CyclicShiftWatermark     # noqa: E402
 from src_baselines.wang_hash import WangHashWatermark           # noqa: E402
 from src_baselines.cohen import CohenWatermark                  # noqa: E402
+from src_baselines.cohen_adapted import CohenAdaptedWatermark   # noqa: E402
 from src_baselines.janas_lagrange import JanasWatermark         # noqa: E402
 
 # ---------------------------------------------------------------- protocol --
@@ -75,7 +80,8 @@ LOG_EVERY        = int(os.environ.get("LOG_EVERY", "10"))
 
 METHODS = {"mpac": MPACWatermark, "qu": QuSegmentWatermark,
            "cyclic": CyclicShiftWatermark, "wang": WangHashWatermark,
-           "cohen": CohenWatermark, "janas": JanasWatermark}
+           "cohen": CohenWatermark, "cohen_adapted": CohenAdaptedWatermark,
+           "janas": JanasWatermark}
 
 log = logging.getLogger("baselines")
 

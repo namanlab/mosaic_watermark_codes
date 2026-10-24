@@ -18,8 +18,8 @@ reordering changes only the checks at block boundaries, and an edited token
 corrupts at most `1 + w` checks.
 
 This repository contains the MOSAIC implementation, the full experiment harness,
-reimplementations of six multi-bit baselines evaluated under one shared
-protocol, and the analysis pipeline that regenerates every table, figure, and
+reimplementations of six multi-bit baselines (Cohen et al. in two variants)
+evaluated under one shared protocol, and the analysis pipeline that regenerates every table, figure, and
 quoted number of the paper.
 
 ```
@@ -44,7 +44,7 @@ quoted number of the paper.
 mosaic_watermark_codes/
 ├── README.md, REPRODUCE.md      # overview; end-to-end reproduction guide
 ├── run_experiments_full.py      # MOSAIC experiment harness (generate / quality / robust / sweep)
-├── run_baseline_experiments.py  # the six baselines under the identical protocol
+├── run_baseline_experiments.py  # the baselines under the identical protocol
 ├── requirements.txt
 ├── data/
 │   ├── opengen_data.parquet     # OpenGen prompts (prefix / targets columns)
@@ -64,6 +64,7 @@ mosaic_watermark_codes/
 │   ├── cyclic_shift.py          # Fernandez et al. (Three Bricks, key shift), WIFS 2023
 │   ├── wang_hash.py             # Wang et al. (codable watermarking, message hash), ICLR 2024
 │   ├── cohen.py                 # Cohen et al. (Figure 2 L-bit construction), IEEE S&P 2025
+│   ├── cohen_adapted.py         # Cohen et al., adapted variant (keyed position schedule)
 │   └── janas_lagrange.py        # Janas et al. (Lagrange interpolation + MCP), 2025
 └── results/                     # analysis code; experiment JSONs are written here at run time
     ├── make_paper_assets.R      # single entry point: every table, figure, and quoted number
@@ -226,7 +227,7 @@ and the payload size, shared by MOSAIC and every baseline.
 
 ### Baselines (`run_baseline_experiments.py`)
 
-Runs the six baselines under the same protocol (same prompts, model, sampling,
+Runs the baselines under the same protocol (same prompts, model, sampling,
 bias, payload sizes, and per-prompt payloads), with model-free detection from the
 generated token ids. The paper uses the first 1,000 OpenGen prompts:
 
@@ -236,7 +237,8 @@ MAIN_MAX_PROMPTS=1000 python run_baseline_experiments.py --method qu  --model me
 MOSAIC_QUICK=1 python run_baseline_experiments.py --method all --model gpt2   # smoke test
 ```
 
-`--method` is one of `mpac`, `qu`, `cyclic`, `wang`, `cohen`, `janas`, or `all`.
+`--method` is one of `mpac`, `qu`, `cyclic`, `wang`, `cohen`, `cohen_adapted`,
+`janas`, or `all`.
 Each run writes `results/opengen_baseline_<method>_<model>.json` and resumes from
 it when interrupted, so remove an older file of the same name before switching
 implementations. The analysis reads baseline results from
@@ -288,7 +290,7 @@ methods; minutes when one baseline changes).
 
 ---
 
-## The six baselines
+## The baselines
 
 All run on the shared green-list layer (`src_baselines/common.py`) with the same
 sampling, and differ in how a payload is written onto it and read back.
@@ -301,6 +303,7 @@ sampling, and differ in how a payload is written onto it and read back.
 | `cyclic` | Fernandez et al., WIFS 2023 | message shifts a per-message green list; score all candidate messages | O(T 2^k) | 16-24 (paper: 16, 20) |
 | `wang` | Wang et al., ICLR 2024 | whole message hashes the vocabulary partition; score all candidate messages | O(T 2^k) | 16-24 (paper: 16, 20) |
 | `cohen` | Cohen et al., IEEE S&P 2025 | Figure 2: a fresh random bit per 21-token block, 2L zero-bit keys, both keys of every bit detected over the whole text | O(T L) | 16-48 |
+| `cohen_adapted` | Cohen et al., IEEE S&P 2025, adapted | one-token blocks; a keyed schedule assigns each position to a bit, the detector knows it and decodes each bit by which of its two keys has more green tokens | O(T) | 16-48 |
 | `janas` | Janas et al., 2025 | payload = a line over GF(2^{k/2}); one point per block of consecutive positions, recovered by Maximum Collinear Points | O(N^2) | 16-48 |
 
 Notes on fidelity, documented in each source file:
@@ -323,9 +326,21 @@ Notes on fidelity, documented in each source file:
   The two choices the construction leaves to the zero-bit primitive are fixed by
   rule: blocks of 21 tokens (the smallest block whose expected z-score alone
   reaches the threshold at the measured flip rate) and detection when any window
-  of 21 tokens reaches z >= 4. Undecided bits are reported as -1. With 200 tokens
-  the construction rarely gives every payload bit a detectable block, so its
-  match rate is near zero at these payload sizes.
+  of 21 tokens reaches z >= 4. Undecided bits are reported as -1. A 200-token
+  text holds at most 10 blocks, fewer than the 16 or more payload bits, so its
+  match rate is zero at these payload sizes. The paper reports it in an appendix
+  section.
+- **Cohen et al., adapted** (`cohen_adapted.py`) is the variant of the earlier
+  runs and the instantiation in the paper's tables and figures. It keeps the two keys per bit
+  and the bit read off by which key carries the mark, and replaces the fresh
+  per-block randomness with a keyed position-to-bit schedule that the detector
+  shares, so each bit is decided from its own tokens. The schedule is indexed
+  by position, so insertion and deletion shift every later token onto the
+  wrong bit. Its PRF domain strings (`cohen.greenlist`, `cohen.alloc`) are those
+  of the earlier runs, so it re-detects their stored texts exactly. The paper's
+  file `opengen_baseline_cohen_adapted_<model>.json` is the earlier run's output
+  under the new name; its `config.method` reads `cohen` because it predates the
+  variant's name.
 - **Janas et al.** places one point per block of consecutive positions, as in
   their construction, so insertion and deletion shift every later block.
 

@@ -13,7 +13,7 @@ make_paper_assets.R can call this script cheaply on every run.
   derived/baseline_sample_repetition.csv  one row per baseline (method, prompt,
       payload): exact match and the number of distinct sorted w = 2 windows, so
       repetition is measured identically for every method.
-  derived/common_sample.json               match rates of MOSAIC and the six
+  derived/common_sample.json               match rates of MOSAIC and the
       baselines on the shared prompts 0-999 with 95% bootstrap intervals, and
       exact McNemar tests of MOSAIC against each baseline paired by (prompt,
       payload).
@@ -43,7 +43,9 @@ MODEL = "meta-llama/Llama-2-7b-hf"
 TAG = MODEL.replace("/", "_")
 MAIN = os.path.join(RES, f"opengen_main_{TAG}.json")
 BASE = os.path.join(RES, "other_models", "opengen_baseline_{}_" + TAG + ".json")
-METHODS = ["mpac", "qu", "cohen", "janas", "cyclic", "wang"]
+# cohen_adapted last: the bootstrap draws in this order, so adding it leaves the
+# other methods' intervals unchanged
+METHODS = ["mpac", "qu", "cohen", "janas", "cyclic", "wang", "cohen_adapted"]
 KS = [16, 20, 24, 32, 48]
 N_COMMON = 1000          # the baselines were run on prompts 0..999
 B, SEED = 10000, 20240611

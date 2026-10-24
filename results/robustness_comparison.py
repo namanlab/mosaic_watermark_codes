@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Robustness of MOSAIC and the six baselines under one attack protocol.
+"""Robustness of MOSAIC and the baselines under one attack protocol.
 
 Every method's stored generations on the shared prompts 0-999 (the prompts the
 baselines were run on) are attacked with the token-level attacks of

@@ -53,8 +53,10 @@ stopifnot(all(file.exists(c(f_main, f_ppl, f_rob, f_par, f_dlt, f_tok))))
 
 # ---- Python for the helper scripts: the project venv when present ----
 PY <- local({
-  v <- file.path(RES, "..", "venv", "bin", "python")
-  if (file.exists(v)) normalizePath(v) else {
+  # keep the venv's own symlink: resolving it (normalizePath) would run the base
+  # interpreter outside the venv, without the venv's packages
+  v <- file.path(normalizePath(file.path(RES, "..")), "venv", "bin", "python")
+  if (file.exists(v)) v else {
     p <- Sys.which("python3"); if (p == "") p <- Sys.which("python"); p
   }
 })
@@ -80,7 +82,7 @@ f_comp   <- file.path(DER, "robustness_comparison.csv")
 f_dedup  <- file.path(DER, "mosaic_dedup_decoding.csv")
 f_sdelta <- file.path(DER, "sweep_delta_summary.csv")
 f_stok   <- file.path(DER, "sweep_tokens_records.csv")
-BL_METHODS <- c("mpac", "qu", "cyclic", "wang", "cohen", "janas")
+BL_METHODS <- c("mpac", "qu", "cyclic", "wang", "cohen", "cohen_adapted", "janas")
 f_base <- file.path(RES, "other_models",
                     sprintf("opengen_baseline_%s_%s.json", BL_METHODS, MODEL))
 stopifnot(all(file.exists(f_base)))
@@ -147,7 +149,8 @@ big <- function(n) gsub(",", "{,}", format(n, big.mark = ",", trim = TRUE))
 
 # ---- registry of every number the text quotes (written to numbers.tex) ----
 NUM <- list()
-setv <- function(key, value) { NUM[[key]] <<- as.character(value); invisible(value) }
+# method ids such as cohen_adapted enter keys without the underscore
+setv <- function(key, value) { NUM[[gsub("_", "", key)]] <<- as.character(value); invisible(value) }
 
 theme_paper <- theme_bw(base_size = 11) +
   theme(panel.grid.minor = element_blank(),
@@ -169,14 +172,17 @@ writetab <- function(lines, name) {
 }
 
 # Method labels, colours, and the keying of each scheme's payload allocation
-# (how a token is assigned to a payload part in our implementation).
-METH <- c("mosaic", "qu", "janas", "cyclic", "wang", "mpac", "cohen")
+# (how a token is assigned to a payload part in our implementation). The tables
+# and figures show the adapted instantiation of Cohen et al.; the exact Figure 2
+# instantiation ("cohen") is reported in its own appendix paragraph (section 3).
+METH <- c("mosaic", "qu", "janas", "cyclic", "wang", "mpac", "cohen_adapted")
 LAB <- c(mosaic = "MOSAIC (ours)", qu = "Qu et al.", janas = "Janas et al.",
          cyclic = "Fernandez et al.", wang = "Wang et al.", mpac = "Yoo et al.",
-         cohen = "Cohen et al.")
+         cohen = "Cohen et al.", cohen_adapted = "Cohen et al. (adapted)")
 MCOL <- c("MOSAIC (ours)" = "#000000", "Qu et al." = "#e41a1c", "Janas et al." = "#377eb8",
           "Fernandez et al." = "#4daf4a", "Wang et al." = "#984ea3",
-          "Yoo et al." = "#ff7f00", "Cohen et al." = "#a65628")
+          "Yoo et al." = "#ff7f00", "Cohen et al." = "#a65628",
+          "Cohen et al. (adapted)" = "#f781bf")
 
 # =====================================================================
 # 1. MAIN RESULTS  (Table 1 + match-vs-bits + detection-strength figures)
@@ -264,7 +270,7 @@ N_COMMON <- unique(rates$n); stopifnot(length(N_COMMON) == 1)
 setv("n.common", big(N_COMMON))
 rate_of <- function(m, k) rates$match_rate[rates$method == m & rates$k == k]
 cell_rate <- function(m, k) { v <- rate_of(m, k); if (length(v) == 0) "NA" else f1(v) }
-ROWS_BL <- c("cyclic", "wang", "mpac", "cohen", "qu", "janas")
+ROWS_BL <- c("cyclic", "wang", "mpac", "cohen_adapted", "qu", "janas")
 bl_line <- function(m, lab) paste0(lab, " & ", paste(vapply(KS, function(k) cell_rate(m, k), ""),
                                                   collapse = " & "), " \\\\")
 writetab(c(
@@ -310,15 +316,40 @@ for (i in seq_len(nrow(mcn))) {
   setv(sprintf("mc.%s.k%d.mo", r$baseline, r$k), r$mosaic_only)
   setv(sprintf("mc.%s.k%d.bo", r$baseline, r$k), r$baseline_only)
 }
+# exact Figure 2 instantiation of Cohen et al. (appendix paragraph): match rate,
+# bit accuracy, and the block-coverage arithmetic behind its zero match rate
+COHEN_B <- as.integer(sub(".*=\\s*(\\d+).*", "\\1",
+  grep("^BLOCK\\s*=", readLines(file.path(RES, "..", "src_baselines", "cohen.py")), value = TRUE)))
+ag_cohen <- read_aggregate(f_base[match("cohen", BL_METHODS)])
+for (k in KS) {
+  setv(sprintf("cs.cohen.k%d", k), f1(rate_of("cohen", k)))
+  setv(sprintf("cohen.bitacc.k%d", k), f1(ag_cohen$bit_accuracy[ag_cohen$k == k]))
+}
+setv("cohen.match.max", f1(max(rates$match_rate[rates$method == "cohen"])))
+setv("cohen.B", COHEN_B)
+setv("cohen.blocks", ceiling(T0 / COHEN_B))                       # blocks in T0 tokens
+setv("cohen.mintok.k16", 16 * COHEN_B)                            # one block per bit
+setv("cohen.covtok.k16", big(round(COHEN_B * 16 * sum(1 / (1:16)))))      # expected, random allocation
 setv("cs.mosaic.fail.k16", round(N_COMMON * (1 - rate_of("mosaic", 16) / 100)))
 setv("cs.mosaic.drop", f1(rate_of("mosaic", 16) - rate_of("mosaic", 48)))
 # gap between the most accurate baseline and MOSAIC where a baseline leads
 gaps <- vapply(KS, function(k) {
-  b <- rates$match_rate[rates$k == k & rates$method != "mosaic"]
+  b <- rates$match_rate[rates$k == k & rates$method %in% ROWS_BL]
   max(b) - rate_of("mosaic", k)
 }, 0)
 setv("gap.min", f1(min(gaps[gaps > 0]))); setv("gap.max", f1(max(gaps[gaps > 0])))
 setv("gap.kmax", max(KS[gaps > 0]))
+# payloads at which MOSAIC exceeds every baseline, significantly so against the
+# strongest one (exact McNemar p < 0.05)
+leads <- KS[vapply(KS, function(k) {
+  r <- rates[rates$k == k & rates$method %in% ROWS_BL, ]
+  best <- r$method[which.max(r$match_rate)]
+  p <- mcn$p_value[mcn$baseline == best & mcn$k == k]
+  rate_of("mosaic", k) > max(r$match_rate) && length(p) == 1 && p < 0.05
+}, TRUE)]
+and_list <- function(x) if (length(x) <= 1) as.character(x) else
+  paste(paste(head(x, -1), collapse = ", "), "and", tail(x, 1))
+setv("lead.ks", and_list(leads))
 
 # =====================================================================
 # 4. MOSAIC ROBUSTNESS ON THE 10% SUBSET  (figure + threshold check)
@@ -379,6 +410,8 @@ cagg <- comp %>% group_by(method, k, attack, strength) %>%
   summarise(match = 100 * mean(match), n = n(), .groups = "drop")
 stopifnot(all(cagg$n == N_COMMON))
 COMP_K <- sort(unique(cagg$k))
+setv("cohen.cmp.max", f1(max(cagg$match[cagg$method == "cohen"])))
+cagg <- cagg[cagg$method %in% METH, ]
 # Qu et al. and Cohen et al. assign payload parts by position in our
 # reimplementations (Qu et al.'s release assigns segments by the previous token;
 # Cohen et al.'s detector is oblivious to the allocation), so they enter the
@@ -391,7 +424,9 @@ bl_config <- function(m) {                           # config block at the file 
 }
 # a method enters the position-shifting attacks when its result file declares an
 # implementation whose allocation matches the original scheme under edits; the
-# earlier Qu et al. and Cohen et al. runs predate that field and are position keyed
+# earlier Qu et al. and Cohen et al. runs predate that field and are position keyed.
+# The adapted Cohen et al. variant is reported as its own method with its own
+# detector, so it enters every attack as it stands.
 POS_ONLY_SUB <- Filter(function(m) !isTRUE(bl_config(m)$faithful_under_edits),
                        c("qu", "cohen"))
 setv("cmp.posonly", paste(LAB[POS_ONLY_SUB], collapse = " and "))
@@ -445,7 +480,7 @@ for (k in COMP_K) {
 writetab(c(
   sprintf("\\begin{tabular}{@{}l %s@{}}", paste(rep("r", length(METH)), collapse = "")),
   "\\toprule",
-  paste0("Attack & ", paste(c("MOSAIC", "Qu", "Janas", "Fern.", "Wang", "Yoo", "Cohen"),
+  paste0("Attack & ", paste(c("MOSAIC", "Qu", "Janas", "Fern.", "Wang", "Yoo", "Cohen ad."),
                             collapse = " & "), " \\\\"),
   "\\midrule", comp_rows, "\\bottomrule", "\\end{tabular}"), "robustness_comparison.tex")
 
@@ -578,24 +613,42 @@ for (i in seq_len(nrow(rs))) {
   setv(sprintf("rep.%s.n50", rs$method[i]), rs$n50[i])
   if (!is.na(rs$match50[i])) setv(sprintf("rep.%s.match50", rs$method[i]), f0(rs$match50[i]))
 }
+# What the favoured (boosted) set of a token depends on: a favoured set fixed by
+# the context is the same at every repetition of that context and keeps favouring
+# a repeated continuation; one that also changes with the position or with a
+# random per-block choice differs from one repetition to the next. Qu et al. is
+# classified from its result file: the released method keys segment and green
+# list on the previous token, and the earlier runs used a position-keyed
+# schedule; the adapted Cohen et al. instantiation keeps its keyed position
+# schedule.
+K_WIN  <- "Sorted window (w = 2)"
+K_PREV <- "Previous token"
+K_POS  <- "Previous token and position"
+K_BLK  <- "Previous token and a random bit per block"
+KEYING <- c(mosaic = K_WIN, cyclic = K_PREV, wang = K_PREV, mpac = K_PREV, janas = K_POS,
+            qu = if (isTRUE(bl_config("qu")$faithful_under_edits)) K_PREV else K_POS,
+            cohen_adapted = K_POS)
+KLEV <- intersect(c(K_WIN, K_PREV, K_POS, K_BLK), KEYING)
+KCOL <- c("#000000", "#4daf4a", "#e41a1c", "#377eb8")[match(KLEV, c(K_WIN, K_PREV, K_POS, K_BLK))]
+WORD <- c("one", "two", "three", "four", "five", "six")
+prev_m  <- names(KEYING)[KEYING == K_PREV]
+other_m <- names(KEYING)[!(KEYING %in% c(K_WIN, K_PREV))]
 share_of <- function(ms) rs$share50[rs$method %in% ms]
-setv("rep.prev.min", f1(min(share_of(c("cyclic", "wang", "mpac")))))
-setv("rep.prev.max", f1(max(share_of(c("cyclic", "wang", "mpac")))))
-setv("rep.pos.max", f1(max(share_of(c("qu", "janas", "cohen")))))
-# what the favoured (boosted) set of a token depends on: a context whose favoured
-# set is the same at every position keeps favouring a repeated continuation
-KEYING <- c(mosaic = "Sorted window (w = 2)", cyclic = "Previous token", wang = "Previous token",
-            mpac = "Previous token", qu = "Previous token and position",
-            janas = "Previous token and position", cohen = "Previous token and position")
-KLEV <- c("Sorted window (w = 2)", "Previous token", "Previous token and position")
+setv("rep.prev.min", f1(min(share_of(prev_m))))
+setv("rep.prev.max", f1(max(share_of(prev_m))))
+setv("rep.prev.n", WORD[length(prev_m)])
+setv("rep.pos.max", f1(max(share_of(other_m))))
+setv("rep.pos.n", WORD[length(other_m)])
+rs <- rs[rs$method %in% names(KEYING), ]
 rs$Keying <- factor(KEYING[rs$method], levels = KLEV)
-ORDER <- c("mosaic", "cyclic", "wang", "mpac", "qu", "janas", "cohen")
+ORDER <- c("mosaic", names(KEYING)[KEYING == K_PREV], names(KEYING)[!(KEYING %in% c(K_WIN, K_PREV))])
 rs$Method <- factor(LAB[rs$method], levels = LAB[ORDER])
 p <- ggplot(rs, aes(Method, share50, fill = Keying)) +
   geom_col(width = 0.7) +
   geom_text(aes(label = sprintf("%.1f", share50)), vjust = -0.4, size = 3) +
-  scale_fill_manual(values = setNames(c("#000000", "#4daf4a", "#e41a1c"), KLEV),
-                    name = "Favoured set keyed on") +
+  # room on the left for the first slanted label
+  scale_x_discrete(expand = expansion(add = c(1.3, 0.6))) +
+  scale_fill_manual(values = setNames(KCOL, KLEV), name = "Favoured set keyed on") +
   expand_limits(y = max(rs$share50) * 1.15) +
   labs(x = NULL, y = "Texts with > 50% repeated windows (%)") +
   theme_paper + theme(axis.text.x = element_text(angle = 30, hjust = 1),
