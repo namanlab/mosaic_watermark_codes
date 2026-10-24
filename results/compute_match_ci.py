@@ -14,17 +14,18 @@ Defaults:
     main_json = opengen_main_meta-llama_Llama-2-7b-hf.json  (this folder)
     out_json  = main_bootstrap_ci.json                      (this folder)
 
-The regex streams only the "k" and "match" fields out of the (multi-hundred-MB)
-samples array, so the large generated-id arrays are never parsed.
+The samples are streamed one at a time (stream_samples.py), keeping only the
+"k" and "match" fields, so memory stays small on a 16 GB laptop.
 """
 import json
 import os
-import re
 import sys
 
 import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+from stream_samples import iter_samples  # noqa: E402
 DEFAULT_IN = os.path.join(HERE, "opengen_main_meta-llama_Llama-2-7b-hf.json")
 DEFAULT_OUT = os.path.join(HERE, "main_bootstrap_ci.json")
 
@@ -34,12 +35,11 @@ SEED = 20240611      # fixed for reproducibility
 
 
 def main(in_path=DEFAULT_IN, out_path=DEFAULT_OUT):
-    data = open(in_path, "r").read()
-    seg = data[data.index('"samples"'):]                       # skip aggregate block
-    ks = np.array([int(x) for x in re.findall(r'"k":(\d+),"message"', seg)])
-    matches = np.array(
-        [m == "true" for m in re.findall(r',"match":(true|false),"bit_accuracy"', seg)],
-        dtype=float)
+    # stream one sample at a time (the file is 147 MB); keep only k and match
+    pairs = [(s["k"], float(s["match"]))
+             for s in iter_samples(in_path, fields=("k", "match"))]
+    ks = np.array([k for k, _ in pairs])
+    matches = np.array([m for _, m in pairs])
     assert len(ks) == len(matches) and len(ks) > 0, "sample extraction failed"
 
     rng = np.random.default_rng(SEED)
@@ -49,7 +49,12 @@ def main(in_path=DEFAULT_IN, out_path=DEFAULT_OUT):
         n = len(v)
         if n == 0:
             continue
-        boot = v[rng.integers(0, n, size=(B, n))].mean(axis=1) * 100
+        # draw the (B, n) resampling indices in blocks of 500 rows (about 31 MB)
+        # instead of one 0.6 GB array; the random stream is identical
+        boot = np.empty(B)
+        for a in range(0, B, 500):
+            e = min(B, a + 500)
+            boot[a:e] = v[rng.integers(0, n, size=(e - a, n))].mean(axis=1) * 100
         lo, hi = np.percentile(boot, [2.5, 97.5])
         out[str(k)] = {
             "n": int(n),

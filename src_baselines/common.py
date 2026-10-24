@@ -129,12 +129,18 @@ class BaselineLM:
         generated = input_ids[0].tolist()
         past, cur = None, input_ids
         eos = self.tokenizer.eos_token_id
+        # optional method-specific logit rule on top of the bias (Qu et al.'s
+        # generator lowers the newline logit after a generated newline)
+        adjust = getattr(wm, "logit_adjustment", None)
         for pos in range(max_new_tokens):
             out = self.model(cur, past_key_values=past, use_cache=True)
             past = out.past_key_values
             logits = out.logits[0, -1, :].float().cpu()[: self.vocab_size]
             if eos is not None and eos < self.vocab_size:
                 logits[eos] = -1e10
+            if adjust is not None:
+                for tok, val in adjust(generated[prompt_len:]):
+                    logits[tok] += val
             favored = wm.favored_set(generated[-1], pos, message)
             logits = logits + torch.from_numpy(
                 np.where(favored, delta, 0.0)).float()

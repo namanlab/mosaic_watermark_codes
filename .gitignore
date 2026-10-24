@@ -216,3 +216,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- MOSAIC project ---------------------------------------------------------
+# Qu et al.'s token-frequency data is distributed by its authors (CC BY-NC 4.0);
+# download it as described in README.md, section "Data"
+data/qu/
+# experiment outputs and generated analysis artefacts
+results/*.json
+results/*.log
+results/other_models/
+results/derived/
+paper/

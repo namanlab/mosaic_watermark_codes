@@ -11,10 +11,13 @@ run under the EXACT protocol of run_experiments_full.py stage 1:
 
 Methods (see src_baselines/), all six from Janas et al. Table 1:
   mpac    Yoo et al., NAACL 2024      position allocation, majority vote
-  qu      Qu et al., USENIX Sec 2025  segment assignment, COUNT argmax
+  qu      Qu et al., USENIX Sec 2025  released RSBH method: balanced previous-token
+                                      segment map, RS [n,k] over GF(2^m), COUNT argmax
+                                      (needs data/qu/token_freq_llama.pkl, see qu_balance.py)
   cyclic  Fernandez et al., WIFS 2023 key shift, 2^k scan (k <= 20 here)
   wang    Wang et al., ICLR 2024      message hash, 2^k scan (k <= 20 here)
-  cohen   Cohen et al., S&P 2025      2L keyed green-lists, per-bit argmax
+  cohen   Cohen et al., S&P 2025      Figure 2: fresh random bit per 21-token block,
+                                      2L zero-bit keys, whole-text windowed detection
   janas   Janas et al., 2025          Lagrange line over GF(2^t) + MCP decode
 
 Usage:
@@ -165,6 +168,12 @@ def save(model, method, ks, samples, t0):
                           "top_p": TOP_P, "tokens": MAX_NEW_TOKENS,
                           "watermark_sizes": ks, "dataset": "OpenGen",
                           "context": "previous token (h=1)",
+                          # which implementation produced this file; the analysis
+                          # uses these to decide which attacks a method enters
+                          "implementation": getattr(METHODS[method], "implementation",
+                                                    "reimplementation"),
+                          "faithful_under_edits": getattr(METHODS[method],
+                                                          "faithful_under_edits", None),
                           "n_prompts": len(set(s["prompt_index"] for s in samples))},
                "aggregate": aggregate(samples, ks), "samples": samples,
                "elapsed_sec": time.time() - t0}
