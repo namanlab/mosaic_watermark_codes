@@ -6,6 +6,8 @@ that a party holding a secret key can read it back exactly, using only the
 tokeniser, the key, and the prompt as context at detection time (no language
 model).
 
+![MOSAIC overview: each generated token carries a keyed, noisy parity check over the payload bits; the checks are collected in any order and decoded jointly by belief propagation](assets/img_cropped.png)
+
 MOSAIC reads the token stream as an **unordered multiset of parity samples**.
 Each token, keyed by an order-canonical hash of its local context (the sorted
 window of the previous `w` tokens), emits one parity check over a key-chosen
@@ -43,6 +45,7 @@ quoted number of the paper.
 ```
 mosaic_watermark_codes/
 ├── README.md, REPRODUCE.md      # overview; end-to-end reproduction guide
+├── assets/img_cropped.png      # overview figure (Figure 1 of the paper)
 ├── run_experiments_full.py      # MOSAIC experiment harness (generate / quality / robust / sweep)
 ├── run_baseline_experiments.py  # the baselines under the identical protocol
 ├── requirements.txt
