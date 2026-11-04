@@ -261,10 +261,12 @@ class MosaicWatermark:
         soft_mag = self.soft_mag
         checks = []
         records = []
+        keys = []        # (sorted window, token): the observation each position makes
         context = list(prompt_ids) if prompt_ids else \
             [self.tokenizer.bos_token_id or 0]
         for tok in token_ids:
             tok = int(tok)
+            keys.append((tuple(sorted(context[-self.window:])), tok))
             # Every position carries a check (embedder biased every position).
             subset = self.prf.check_subset(context)
             r = self.prf.chip(context)
@@ -276,28 +278,43 @@ class MosaicWatermark:
             checks.append((subset.tolist(), llr))
             records.append((tuple(int(s) for s in subset), r, in_green))
             context.append(tok)
-        return checks, records
+        return checks, records, keys
 
     def detect_ids(self, token_ids, prompt_ids=None,
-                   max_iters: int = 80) -> Dict:
-        checks, records = self._collect_checks(token_ids, prompt_ids)
-        est = bp_decode(self.k_bits, checks, max_iters=max_iters)
+                   max_iters: int = 80, distinct: bool = True) -> Dict:
+        """Decode and score the text. With distinct=True (the deployed
+        detector) a position whose (sorted window, token) pair repeats an
+        earlier one is skipped: it repeats that observation exactly, so it
+        adds no information, and dropping it makes the agreements independent
+        under the null (Lemma null). distinct=False counts every position."""
+        checks, records, keys = self._collect_checks(token_ids, prompt_ids)
+        if distinct:
+            seen, keep = set(), []
+            for i, key in enumerate(keys):
+                if key not in seen:
+                    seen.add(key)
+                    keep.append(i)
+        else:
+            keep = list(range(len(records)))
+        est = bp_decode(self.k_bits, [checks[i] for i in keep], max_iters=max_iters)
         est_list = [int(b) for b in est]
 
-        # Score: how many positions' observed color agree with the decoded
+        # Score: how many kept positions' observed color agree with the decoded
         # message's predicted target. Under H0 this is Binomial(T, 1/2).
-        S, T = 0, len(records)
+        agree = []
         for subset, r, in_green in records:
             parity = int(np.bitwise_xor.reduce(est[list(subset)])) if subset else 0
-            g = parity ^ r
-            if in_green == bool(g):
-                S += 1
+            agree.append(in_green == bool(parity ^ r))
+        S, T = sum(agree[i] for i in keep), len(keep)
         p_value = self._union_bound_pvalue(T, S, self.k_bits)
         return {
             "message": est_list,
             "score": S,
             "num_tokens": T,
+            "num_positions": len(records),
             "match_fraction": S / max(T, 1),
+            # share of all positions agreeing with the decoded message
+            "agreement_all": sum(agree) / max(len(agree), 1),
             "p_value": p_value,
             "detected": p_value < 0.01,
         }

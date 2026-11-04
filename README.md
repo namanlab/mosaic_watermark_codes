@@ -34,7 +34,7 @@ quoted number of the paper.
         ▼  green if the scrambled parity = 1, else red; sample as usual
    TEXT ──► detector recomputes every token's check from its context,
             reads its colour → a soft observation (LLR) of that parity,
-            collects ALL of them (order irrelevant), and runs
+            keeps one per distinct (window, token) pair (order irrelevant), and runs
             BELIEF PROPAGATION over the Tanner graph → recovers m + a p-value
 ```
 
@@ -77,7 +77,8 @@ mosaic_watermark_codes/
     ├── summarise_sweeps.py      # compact summaries of the delta and token-budget sweeps
     ├── sample_diagnostics.py    # per-sample diagnostics, common-sample rates, McNemar tests
     ├── robustness_comparison.py # all methods under the same token-level attacks
-    ├── dedup_decoding.py        # MOSAIC decoding with repeated observations counted once
+    ├── redecode_main.py         # main texts decoded with the deployed (distinct-pair) detector
+    ├── null_detection.py        # false positives on unwatermarked and human text
     ├── second_model.py          # MOSAIC and the baselines on Mistral-7B and Qwen2.5-7B
     └── merge_main_results.R     # merges sharded main-run JSONs
 ```
@@ -87,7 +88,8 @@ mosaic_watermark_codes/
 - **`mosaic.py`**: `MosaicWatermark`, the top-level object. `generate()` embeds a
   payload during sampling (or produces an unmarked baseline with
   `watermark=False`); `detect_ids()` / `detect_text()` recover the payload and a
-  p-value without a model; `perplexity()` scores text; `reconfigure()` changes
+  p-value without a model, scoring one position per distinct (sorted window,
+  token) pair (`distinct=False` scores every position); `perplexity()` scores text; `reconfigure()` changes
   payload size, bias, or window in place so one loaded model serves many
   settings. The bias is added to the logits first, then temperature and nucleus
   (top-p) truncation are applied to the biased distribution.

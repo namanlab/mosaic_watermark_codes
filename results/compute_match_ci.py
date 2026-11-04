@@ -11,7 +11,7 @@ Usage:
     python compute_match_ci.py [main_json] [out_json]
 
 Defaults:
-    main_json = opengen_main_meta-llama_Llama-2-7b-hf.json  (this folder)
+    main_json = derived/opengen_main_meta-llama_Llama-2-7b-hf_distinct.json (redecode_main.py)
     out_json  = main_bootstrap_ci.json                      (this folder)
 
 The samples are streamed one at a time (stream_samples.py), keeping only the
@@ -26,7 +26,7 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 from stream_samples import iter_samples  # noqa: E402
-DEFAULT_IN = os.path.join(HERE, "opengen_main_meta-llama_Llama-2-7b-hf.json")
+DEFAULT_IN = os.path.join(HERE, "derived", "opengen_main_meta-llama_Llama-2-7b-hf_distinct.json")
 DEFAULT_OUT = os.path.join(HERE, "main_bootstrap_ci.json")
 
 KS = (16, 20, 24, 32, 48)

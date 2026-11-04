@@ -128,7 +128,8 @@ regenerated, only the outputs that depend on it are recomputed.
 | `summarise_sweeps.py` | `sweep_delta_summary.csv`, `sweep_tokens_records.csv` | delta trade-off and token-budget figures |
 | `sample_diagnostics.py` | `mosaic_sample_diagnostics.csv`, `baseline_sample_repetition.csv`, `common_sample.json` | small-payload analysis; Table 2 and its paired tests |
 | `robustness_comparison.py [model id]` | `robustness_comparison.csv`, `robustness_comparison_<tag>.csv` | robustness comparison figures and tables (Llama-2-7B by default; Mistral-7B and Qwen2.5-7B with their model id) |
-| `dedup_decoding.py` | `mosaic_dedup_decoding.csv` | decoding with repeated observations counted once |
+| `redecode_main.py [model id]` | `opengen_main_<model>_distinct.json`, `mosaic_distinct_<model>.csv` | the main texts decoded with the deployed detector (one position per distinct (window, token) pair); every analysis reads this file, and the CSV gives the comparison with scoring every position |
+| `null_detection.py [model id]` | `null_detection_<model>.csv` | false positives: the detector on unwatermarked generations and human continuations of the shared prompts |
 | `second_model.py` | `second_model_<tag>.json` | Mistral-7B and Qwen2.5-7B: rates, paired tests, measured flip rate, repetition |
 
 Resource use: every helper runs in a single process, reads the large result
@@ -145,7 +146,8 @@ Paper artifact -> source:
 | Robustness comparison (figures and tables)     | `make_paper_assets.R`, `robustness_comparison.py` |
 | MOSAIC robustness on the 10% subset            | `make_paper_assets.R`                        |
 | Token-budget heatmap, delta trade-off          | `make_paper_assets.R`, `summarise_sweeps.py` |
-| Small-payload analysis (figures and tables)    | `make_paper_assets.R`, `sample_diagnostics.py`, `dedup_decoding.py` |
+| Small-payload analysis (figures and tables)    | `make_paper_assets.R`, `sample_diagnostics.py`, `redecode_main.py` |
+| False-positive table (Appendix F)              | `make_paper_assets.R`, `null_detection.py`   |
 | Paired McNemar tests and bootstrap intervals   | `sample_diagnostics.py`                      |
 | Tables 1-2 and Figure 2 across three models    | `make_paper_assets.R`, `second_model.py`     |
 | Every number quoted in the text                | `make_paper_assets.R` -> `numbers.tex`       |

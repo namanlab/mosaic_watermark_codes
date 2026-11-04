@@ -26,7 +26,9 @@
 #                                  derived/baseline_sample_repetition.csv,
 #                                  derived/common_sample.json
 #     robustness_comparison.py  -> derived/robustness_comparison.csv
-#     dedup_decoding.py         -> derived/mosaic_dedup_decoding.csv
+#     redecode_main.py          -> derived/opengen_main_<model>_distinct.json,
+#                                  derived/mosaic_distinct_<model>.csv (per model)
+#     null_detection.py         -> derived/null_detection_<model>.csv (per model)
 #
 # Run:  Rscript make_paper_assets.R
 suppressPackageStartupMessages({
@@ -43,13 +45,15 @@ DER <- file.path(RES, "derived")
 for (d in c(TAB, FIG, DER)) dir.create(d, showWarnings = FALSE, recursive = TRUE)
 
 MODEL <- "meta-llama_Llama-2-7b-hf"
-f_main <- file.path(RES, paste0("opengen_main_", MODEL, ".json"))
+f_raw  <- file.path(RES, paste0("opengen_main_", MODEL, ".json"))      # as generated
+# every MOSAIC analysis reads the texts decoded with the deployed detector
+f_main <- file.path(RES, "derived", paste0("opengen_main_", MODEL, "_distinct.json"))
 f_ppl  <- file.path(RES, paste0("opengen_main_", MODEL, "_Perplexity.json"))
 f_rob  <- file.path(RES, paste0("opengen_robustness_", MODEL, ".json"))
 f_par  <- file.path(RES, paste0("opengen_paraphrase_robustness_", MODEL, ".json"))
 f_dlt  <- file.path(RES, "sweep_data_delta.json")
 f_tok  <- file.path(RES, "sweep_data_tokens.json")
-stopifnot(all(file.exists(c(f_main, f_ppl, f_rob, f_par, f_dlt, f_tok))))
+stopifnot(all(file.exists(c(f_raw, f_ppl, f_rob, f_par, f_dlt, f_tok))))
 
 # ---- Python for the helper scripts: the project venv when present ----
 PY <- local({
@@ -79,33 +83,44 @@ f_diag   <- file.path(DER, "mosaic_sample_diagnostics.csv")
 f_rep    <- file.path(DER, "baseline_sample_repetition.csv")
 f_common <- file.path(DER, "common_sample.json")
 f_comp   <- file.path(DER, "robustness_comparison.csv")
-f_dedup  <- file.path(DER, "mosaic_dedup_decoding.csv")
+f_dist   <- file.path(DER, paste0("mosaic_distinct_", MODEL, ".csv"))
 f_sdelta <- file.path(DER, "sweep_delta_summary.csv")
 f_stok   <- file.path(DER, "sweep_tokens_records.csv")
 BL_METHODS <- c("mpac", "qu", "cyclic", "wang", "cohen", "cohen_adapted", "janas")
 f_base <- file.path(RES, "other_models",
                     sprintf("opengen_baseline_%s_%s.json", BL_METHODS, MODEL))
 stopifnot(all(file.exists(f_base)))
+run_helper("redecode_main.py", setNames(list(f_raw, f_raw), c(f_main, f_dist)))
 run_helper("summarise_sweeps.py", setNames(list(f_dlt, f_tok), c(f_sdelta, f_stok)))
 run_helper("sample_diagnostics.py",
            setNames(list(f_main, f_base, c(f_main, f_base)), c(f_diag, f_rep, f_common)))
 run_helper("robustness_comparison.py", setNames(list(c(f_main, f_base)), f_comp),
            keep_stale = TRUE)
-run_helper("dedup_decoding.py", setNames(list(f_main), f_dedup))
 # second generation models: each enters once its MOSAIC result file exists
 SECOND <- c(mistral = "mistralai/Mistral-7B-v0.1", qwen = "Qwen/Qwen2.5-7B")
 SM_BASE <- c("qu", "janas", "mpac", "cyclic", "wang", "cohen_adapted", "cohen")
-sm_files <- function(model) {                          # MOSAIC file first, then baselines
+sm_raw <- function(model) file.path(RES, sprintf("opengen_main_%s.json", gsub("/", "_", model)))
+sm_files <- function(model) {                          # decoded MOSAIC file first, then baselines
   tag <- gsub("/", "_", model)
   b <- file.path(RES, "other_models", sprintf("opengen_baseline_%s_%s.json", SM_BASE, tag))
-  c(file.path(RES, sprintf("opengen_main_%s.json", tag)), b[file.exists(b)])
+  c(file.path(DER, sprintf("opengen_main_%s_distinct.json", tag)), b[file.exists(b)])
 }
-SECOND <- SECOND[file.exists(vapply(SECOND, function(m) sm_files(m)[1], ""))]
+SECOND <- SECOND[file.exists(vapply(SECOND, sm_raw, ""))]
+for (m in SECOND)
+  run_helper("redecode_main.py", setNames(list(sm_raw(m), sm_raw(m)),
+             c(sm_files(m)[1], file.path(DER, sprintf("mosaic_distinct_%s.csv", gsub("/", "_", m))))),
+             args = m)
 f_sm <- setNames(file.path(DER, sprintf("second_model_%s.json", names(SECOND))), names(SECOND))
 if (length(SECOND)) run_helper("second_model.py", setNames(lapply(SECOND, sm_files), f_sm))
 # the same token-level attacks on each further model's stored texts
 f_comp_sm <- setNames(file.path(DER, sprintf("robustness_comparison_%s.csv", names(SECOND))),
                       names(SECOND))
+# the detector on unwatermarked and human text, every model
+ALLM <- c(llama = "meta-llama/Llama-2-7b-hf", SECOND)
+f_null <- setNames(file.path(DER, sprintf("null_detection_%s.csv", gsub("/", "_", ALLM))), names(ALLM))
+for (tag in names(ALLM))
+  run_helper("null_detection.py", setNames(list(sm_raw(ALLM[[tag]])), f_null[[tag]]),
+             args = ALLM[[tag]])
 for (tag in names(SECOND))
   run_helper("robustness_comparison.py", setNames(list(sm_files(SECOND[[tag]])), f_comp_sm[[tag]]),
              keep_stale = TRUE, args = SECOND[[tag]])
@@ -425,7 +440,7 @@ leads <- KS[vapply(KS, function(k) {
   p <- mcn$p_value[mcn$baseline == best & mcn$k == k]
   rate_of("mosaic", k) > max(r$match_rate) && length(p) == 1 && p < 0.05
 }, TRUE)]
-and_list <- function(x) if (length(x) < 2) as.character(x) else
+and_list <- function(x) if (length(x) == 0) "none" else if (length(x) < 2) as.character(x) else
   paste0(paste(head(x, -1), collapse = ", "), if (length(x) > 2) "," else "", " and ", tail(x, 1))
 setv("lead.ks", and_list(leads))
 
@@ -519,7 +534,10 @@ setv("nmodels", WORD[length(XM)])
 behind_all <- unlist(lapply(XM, `[[`, "behind"))
 setv("behind.all.kmax", max(behind_all))
 setv("behind.all.max", f1(max(unlist(lapply(XM, `[[`, "gap")))))
-setv("behind.llama.ks", and_list(llama_behind))
+# the text: on Llama-2 no baseline is significantly ahead, and Janas et al. are
+# level with MOSAIC at 16 and 20 bits (the deployed detector)
+stopifnot(length(llama_behind) == 0,
+          all(mcn$p_value[mcn$baseline == "janas" & mcn$k %in% c(16, 20)] >= 0.05))
 # spread of MOSAIC's 16-bit match rate across models, and the best 48-bit rate of
 # Yoo et al. on any model (shared prompts)
 m16 <- c(rate_of("mosaic", 16), vapply(SMD, function(d)
@@ -695,6 +713,7 @@ stored  <- diag[diag$prompt_index < N_COMMON, c("prompt_index", "k", "match")]
 reclean <- comp[comp$method == "mosaic" & comp$attack == "clean", c("prompt_index", "k", "match")]
 mm <- merge(stored, reclean, by = c("prompt_index", "k"), suffixes = c(".stored", ".here"))
 for (k in COMP_K) setv(sprintf("flip.k%d", k), sum(mm$k == k & mm$match.stored != mm$match.here))
+stopifnot(all(mm$match.stored == mm$match.here))  # the text says they reproduce exactly
 for (m in setdiff(METH, "mosaic")) {                   # baselines: must reproduce exactly
   st <- rates[rates$method == m, c("k", "match_rate")]
   here <- cagg[cagg$method == m & cagg$attack == "clean", c("k", "match")]
@@ -781,6 +800,7 @@ setv("rb.redetect.maxdiff", f1(max(vapply(names(SECOND), function(tag) {
   j <- merge(sr, CAGG[[tag]][CAGG[[tag]]$method == "mosaic" & CAGG[[tag]]$attack == "clean",
                              c("k", "match")], by = "k")
   max(abs(j$match_rate - j$match)) }, 0))))
+stopifnot(NUM[["rb.redetect.maxdiff"]] == "0.0")       # the text: they reproduce exactly
 # cross-model figure at 32 bits: the methods run on every model
 RB_K <- 32
 xr <- do.call(rbind, lapply(names(CAGG), function(tag) {
@@ -832,6 +852,10 @@ for (k in unique(drows$k)) setv(sprintf("dl.match.d%d.k%d", DELTA, k), f0(dv(DEL
 setv("dl.min", min(drows$delta)); setv("dl.max", max(drows$delta))
 setv("dl.ppl.min", f1(mean(drows$ppl[drows$delta == min(drows$delta)])))
 setv("dl.ppl.max", f0(mean(drows$ppl[drows$delta == max(drows$delta)])))
+# a lower-distortion operating point
+DLOW <- 4
+for (k in unique(drows$k)) setv(sprintf("dl.match.d%d.k%d", DLOW, k), f1(dv(DLOW, k, "match")))
+for (d in c(DLOW, DELTA)) setv(sprintf("dl.ppl.d%d", d), f1(mean(drows$ppl[drows$delta == d])))
 
 # =====================================================================
 # 7. TOKEN BUDGET HEATMAP  (match rate by payload size x token length)
@@ -951,28 +975,49 @@ p <- ggplot(rs, aes(Method, share50, fill = Keying)) +
   guides(fill = guide_legend(ncol = 1, title.position = "top"))
 savefig("repetition_by_method.pdf", p, 4.3, 4.2)
 
-# decoder with repeated observations counted once
-dd <- read.csv(f_dedup)
-DDK <- sort(unique(dd$k))                             # payloads re-decoded (16 and 20)
-setv("dd.ks", paste(DDK, collapse = " and "))
-for (k in DDK) {
+# the deployed decoder (distinct observations) against counting every position
+dd <- read.csv(f_dist)
+for (k in KS) {
   s <- dd[dd$k == k, ]
-  setv(sprintf("dd.match.k%d", k), f1(100 * mean(s$match_dedup)))
-  setv(sprintf("dd.recover.k%d", k), sum(s$match == 0 & s$match_dedup == 1))
-  setv(sprintf("dd.break.k%d", k), sum(s$match == 1 & s$match_dedup == 0))
+  setv(sprintf("dd.match.k%d", k), f1(100 * mean(s$match)))
+  setv(sprintf("dd.all.k%d", k), f1(100 * mean(s$match_all)))
+  setv(sprintf("dd.recover.k%d", k), sum(s$match_all == 0 & s$match == 1))
+  setv(sprintf("dd.break.k%d", k), sum(s$match_all == 1 & s$match == 0))
 }
-dd_rows <- vapply(DDK, function(k) {
+setv("dd.ks", and_list(sort(unique(dd$k))))
+setv("dd.kept.min", f1(100 * min(tapply(dd$num_distinct / dd$num_tokens, dd$k, mean))))
+dd_rows <- vapply(KS, function(k) {
   s <- dd[dd$k == k, ]
-  sprintf("%d & %.1f & %.1f & %d & %d & %d \\\\", k, 100 * mean(s$match),
-          100 * mean(s$match_dedup), sum(s$match == 0),
-          sum(s$match == 0 & s$match_dedup == 1), sum(s$match == 1 & s$match_dedup == 0))
+  sprintf("%d & %.1f & %.1f & %d & %d & %d \\\\", k, 100 * mean(s$match_all),
+          100 * mean(s$match), sum(s$match_all == 0),
+          sum(s$match_all == 0 & s$match == 1), sum(s$match_all == 1 & s$match == 0))
 }, "")
 writetab(c(
   "\\begin{tabular}{@{}r rr rrr@{}}", "\\toprule",
   "& \\multicolumn{2}{c}{Match (\\%)} & & \\multicolumn{2}{c}{Changed outcomes} \\\\",
   "\\cmidrule(lr){2-3}\\cmidrule(l){5-6}",
-  "$k$ & All checks & Distinct & Failures & Recovered & Lost \\\\", "\\midrule",
+  "$k$ & Every position & Distinct & Failures & Recovered & Lost \\\\", "\\midrule",
   dd_rows, "\\bottomrule", "\\end{tabular}"), "dedup_decoding.tex")
+
+# false positives: unwatermarked generations and human continuations
+nd <- do.call(rbind, lapply(names(f_null), function(tag) cbind(model = tag, read.csv(f_null[[tag]]))))
+nd_g <- nd %>% group_by(model, source) %>%
+  summarise(n = n(), fp = sum(p_value < 0.01), fp3 = sum(p_value < 0.001), minp = min(p_value),
+            fpa = sum(p_value_all < 0.01), minpa = min(p_value_all), .groups = "drop")
+setv("null.n", format(nrow(nd), big.mark = ","))
+setv("null.nper", format(min(nd_g$n), big.mark = ","))
+setv("null.fp", sum(nd$p_value < 0.01)); setv("null.fp3", sum(nd$p_value < 0.001))
+setv("null.minp", p_tex(min(nd$p_value)))
+setv("null.all.fp", sum(nd$p_value_all < 0.01)); setv("null.all.minp", p_tex(min(nd$p_value_all)))
+SRC <- c(plain_text = "Unwatermarked", reference = "Human")
+writetab(c("\\begin{tabular}{@{}ll r rr rr@{}}", "\\toprule",
+  "& & & \\multicolumn{2}{c}{Distinct (deployed)} & \\multicolumn{2}{c}{Every position} \\\\",
+  "\\cmidrule(lr){4-5}\\cmidrule(l){6-7}",
+  "Model & Text & $n$ & $p < 0.01$ & min $p$ & $p < 0.01$ & min $p$ \\\\", "\\midrule",
+  vapply(seq_len(nrow(nd_g)), function(i) with(nd_g[i, ], sprintf(
+    "%s & %s & %s & %d & $%s$ & %d & $%s$ \\\\", MSHORT[[model]], SRC[[source]],
+    format(n, big.mark = ","), fp, p_tex(minp), fpa, p_tex(minpa))), ""),
+  "\\bottomrule", "\\end{tabular}"), "null_detection.tex")
 
 # failure diagnostics table (low payloads + the largest payload for contrast)
 diag_rows <- vapply(c(16, 20, 48), function(k) {
@@ -990,6 +1035,8 @@ writetab(c(
 # =====================================================================
 # 9. NUMBERS QUOTED IN THE TEXT
 # =====================================================================
+bad <- names(NUM)[lengths(NUM) != 1]
+if (length(bad)) stop("numbers without exactly one value: ", paste(bad, collapse = ", "))
 writeLines(c("% Generated by results/make_paper_assets.R from the result files. Do not edit.",
              sprintf("\\expandafter\\def\\csname mw@%s\\endcsname{%s}", names(NUM), unlist(NUM))),
            file.path(TAB, "numbers.tex"))

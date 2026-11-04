@@ -48,7 +48,7 @@ MODEL = sys.argv[1] if len(sys.argv) > 1 else "meta-llama/Llama-2-7b-hf"
 TAG = MODEL.replace("/", "_")
 OUT_NAME = ("robustness_comparison.csv" if MODEL == "meta-llama/Llama-2-7b-hf"
             else f"robustness_comparison_{SECOND_MODELS[MODEL]}.csv")
-MAIN = os.path.join(RES, f"opengen_main_{TAG}.json")
+MAIN = os.path.join(OUT, f"opengen_main_{TAG}_distinct.json")   # redecode_main.py
 BASE = os.path.join(RES, "other_models", "opengen_baseline_{}_" + TAG + ".json")
 N_COMMON = 1000
 SEED = 42

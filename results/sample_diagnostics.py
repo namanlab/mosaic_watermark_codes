@@ -41,7 +41,7 @@ from stream_samples import iter_samples      # noqa: E402
 OUT = os.path.join(RES, "derived")
 MODEL = "meta-llama/Llama-2-7b-hf"
 TAG = MODEL.replace("/", "_")
-MAIN = os.path.join(RES, f"opengen_main_{TAG}.json")
+MAIN = os.path.join(RES, "derived", f"opengen_main_{TAG}_distinct.json")   # redecode_main.py
 BASE = os.path.join(RES, "other_models", "opengen_baseline_{}_" + TAG + ".json")
 # cohen_adapted last: the bootstrap draws in this order, so adding it leaves the
 # other methods' intervals unchanged

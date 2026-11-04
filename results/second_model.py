@@ -44,7 +44,7 @@ N_COMMON = 1000
 
 def files_for(model):
     tag = model.replace("/", "_")
-    main = os.path.join(RES, f"opengen_main_{tag}.json")
+    main = os.path.join(OUT, f"opengen_main_{tag}_distinct.json")   # redecode_main.py
     base = {m: os.path.join(RES, "other_models", f"opengen_baseline_{m}_{tag}.json")
             for m in BASELINES}
     return main, {m: p for m, p in base.items() if os.path.exists(p)}
