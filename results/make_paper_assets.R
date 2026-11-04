@@ -66,13 +66,13 @@ PY <- local({
 # outputs. keep_stale leaves stale outputs in place for helpers that update
 # themselves incrementally (robustness_comparison.py recomputes only the
 # methods whose result files changed).
-run_helper <- function(script, deps, keep_stale = FALSE) {
+run_helper <- function(script, deps, keep_stale = FALSE, args = character()) {
   stale <- vapply(names(deps), function(o) !file.exists(o) ||
                     any(file.info(deps[[o]])$mtime > file.info(o)$mtime), TRUE)
   if (!any(stale)) return(invisible(TRUE))
   if (!keep_stale) invisible(file.remove(names(deps)[stale & file.exists(names(deps))]))
   cat("  running", script, "for", paste(basename(names(deps)[stale]), collapse = ", "), "...\n")
-  status <- system2(PY, shQuote(file.path(RES, script)))
+  status <- system2(PY, shQuote(c(file.path(RES, script), args)))
   stopifnot(status == 0, all(file.exists(names(deps))))
 }
 f_diag   <- file.path(DER, "mosaic_sample_diagnostics.csv")
@@ -92,6 +92,23 @@ run_helper("sample_diagnostics.py",
 run_helper("robustness_comparison.py", setNames(list(c(f_main, f_base)), f_comp),
            keep_stale = TRUE)
 run_helper("dedup_decoding.py", setNames(list(f_main), f_dedup))
+# second generation models: each enters once its MOSAIC result file exists
+SECOND <- c(mistral = "mistralai/Mistral-7B-v0.1", qwen = "Qwen/Qwen2.5-7B")
+SM_BASE <- c("qu", "janas", "mpac", "cyclic", "wang", "cohen_adapted", "cohen")
+sm_files <- function(model) {                          # MOSAIC file first, then baselines
+  tag <- gsub("/", "_", model)
+  b <- file.path(RES, "other_models", sprintf("opengen_baseline_%s_%s.json", SM_BASE, tag))
+  c(file.path(RES, sprintf("opengen_main_%s.json", tag)), b[file.exists(b)])
+}
+SECOND <- SECOND[file.exists(vapply(SECOND, function(m) sm_files(m)[1], ""))]
+f_sm <- setNames(file.path(DER, sprintf("second_model_%s.json", names(SECOND))), names(SECOND))
+if (length(SECOND)) run_helper("second_model.py", setNames(lapply(SECOND, sm_files), f_sm))
+# the same token-level attacks on each further model's stored texts
+f_comp_sm <- setNames(file.path(DER, sprintf("robustness_comparison_%s.csv", names(SECOND))),
+                      names(SECOND))
+for (tag in names(SECOND))
+  run_helper("robustness_comparison.py", setNames(list(sm_files(SECOND[[tag]])), f_comp_sm[[tag]]),
+             keep_stale = TRUE, args = SECOND[[tag]])
 
 # ---- clear old assets so nothing stale survives ----
 old <- c(list.files(TAB, "\\.tex$", full.names = TRUE),
@@ -145,6 +162,7 @@ f0 <- function(x) sprintf("%.0f", x)
 f1 <- function(x) sprintf("%.1f", x)
 f2 <- function(x) sprintf("%.2f", x)
 f3 <- function(x) sprintf("%.3f", x)
+WORD <- c("one", "two", "three", "four", "five", "six")
 big <- function(n) gsub(",", "{,}", format(n, big.mark = ",", trim = TRUE))
 
 # ---- registry of every number the text quotes (written to numbers.tex) ----
@@ -197,14 +215,34 @@ main <- data.frame(
 main <- main[order(main$k), ]
 ci_half <- bootstrap_match_ci(f_main, main$k)
 
-rows <- vapply(seq_len(nrow(main)), function(i) with(main[i, ], sprintf(
-  "%d & %.1f & %.2f & %.1f & %s & %.1f \\\\", as.integer(k), match,
-  ci_half[as.character(k)], bitacc, sci_tex(medp), ppl_mark)), "")
+# Table 1: MOSAIC on every generation model, Llama-2 over all prompts and the
+# further models over the shared prompts (second_model.py)
+SMD <- lapply(f_sm, fromJSON)
+SMAG <- lapply(SECOND, function(m) read_aggregate(sm_files(m)[1]))
+MSHORT <- c(llama = "Llama-2-7B", mistral = "Mistral-7B", qwen = "Qwen2.5-7B")
+mos <- c(list(llama = data.frame(k = main$k, match = main$match,
+                                 half = unname(ci_half[as.character(main$k)]),
+                                 bit = main$bitacc, ppl = main$ppl_mark, n = main$n)),
+         lapply(setNames(names(SECOND), names(SECOND)), function(tag) {
+           r <- SMD[[tag]]$rates; r <- r[r$method == "mosaic", ]; r <- r[order(r$k), ]
+           a <- SMAG[[tag]]; a <- a[match(r$k, a$k), ]
+           data.frame(k = r$k, match = r$match_rate, half = (r$ci_hi - r$ci_lo) / 2,
+                      bit = a$bit_accuracy, ppl = a$mean_ppl_watermarked, n = r$n)
+         }))
+stopifnot(all(vapply(mos, function(d) isTRUE(all.equal(as.numeric(d$k), as.numeric(KS))), TRUE)))
+nm <- length(mos)
+t1_rows <- vapply(seq_along(KS), function(i) paste0(KS[i], " & ", paste(vapply(mos, function(d)
+  sprintf("%.1f & %.2f & %.1f & %.1f", d$match[i], d$half[i], d$bit[i], d$ppl[i]), ""),
+  collapse = " & "), " \\\\"), "")
 writetab(c(
-  "\\begin{tabular}{@{}r r r r c r@{}}", "\\toprule",
-  "Payload $k$ & Match & $\\pm$95\\% & Bit acc. & Median $p$ & PPL \\\\",
-  " (bits) & (\\%) & (\\%) & (\\%) & & \\\\", "\\midrule",
-  rows, "\\bottomrule", "\\end{tabular}"), "main_results.tex")
+  sprintf("\\begin{tabular}{@{}r %s@{}}", paste(rep("rrrr", nm), collapse = " ")), "\\toprule",
+  paste0(" & ", paste(sprintf("\\multicolumn{4}{c}{%s, %s prompts}", MSHORT[names(mos)],
+                              vapply(mos, function(d) big(unique(d$n)), "")), collapse = " & "),
+         " \\\\"),
+  paste(sprintf("\\cmidrule(lr){%d-%d}", 2 + 4 * (seq_len(nm) - 1), 1 + 4 * seq_len(nm)),
+        collapse = ""),
+  paste0("$k$ & ", paste(rep("Match & $\\pm$ & Bit acc. & PPL", nm), collapse = " & "), " \\\\"),
+  "\\midrule", t1_rows, "\\bottomrule", "\\end{tabular}"), "main_results.tex")
 
 N_MAIN <- unique(main$n); stopifnot(length(N_MAIN) == 1)
 setv("n.main", big(N_MAIN))
@@ -249,7 +287,16 @@ pe_k <- tapply(diag$pe_true, diag$k, mean)
 EPS <- 0.01; T0 <- 200; W <- 2; DELTA <- 6; TAU <- 0.8; A_USED <- 4
 Z <- 2 * sqrt(PE * (1 - PE))
 budget <- function(k, eps = EPS) 2 * (k * log(2) + log(1 / eps)) / (1 - Z)
-thresh <- function(k) (1 - budget(k) / T0) / (1 + W)
+# Robust recovery (Theorem robust): corrupting a fraction eta of the checks with
+# fair coins gives a channel with flip rate p_eta = p_e + eta (1/2 - p_e) and
+# Bhattacharyya parameter Z_eta; recovery at level EPS needs
+# (1 - Z_eta) T0 >= (1 - Z) T_star. The substitution threshold is the largest
+# eta allowed, divided by the 1 + w checks one substitution corrupts.
+thresh <- function(k) {
+  zmax <- 1 - (1 - Z) * budget(k) / T0               # largest admissible Z_eta
+  pmax <- (1 - sqrt(1 - zmax^2)) / 2                  # its flip rate
+  (pmax - PE) / (0.5 - PE) / (1 + W)
+}
 setv("pe", f3(PE)); setv("pe.min", f3(min(pe_k))); setv("pe.max", f3(max(pe_k)))
 setv("Z", f2(Z)); setv("oneminusZ", f2(1 - Z)); setv("eps", EPS)
 setv("rate", f1(2 * log(2) / (1 - Z)))
@@ -271,15 +318,46 @@ setv("n.common", big(N_COMMON))
 rate_of <- function(m, k) rates$match_rate[rates$method == m & rates$k == k]
 cell_rate <- function(m, k) { v <- rate_of(m, k); if (length(v) == 0) "NA" else f1(v) }
 ROWS_BL <- c("cyclic", "wang", "mpac", "cohen_adapted", "qu", "janas")
-bl_line <- function(m, lab) paste0(lab, " & ", paste(vapply(KS, function(k) cell_rate(m, k), ""),
-                                                  collapse = " & "), " \\\\")
+# Table 2: every method on the shared prompts of every generation model; NA marks
+# payloads whose extraction is exponential in k, -- a method not run on that model
+T2M <- c("llama", names(SECOND))
+mrates <- function(tag) if (tag == "llama") rates else SMD[[tag]]$rates
+t2_cell <- function(tag, m, k) {
+  r <- mrates(tag)
+  if (!(m %in% r$method)) return("--")
+  v <- r$match_rate[r$method == m & r$k == k]
+  if (length(v) == 0) "NA" else f1(v)
+}
+t2_line <- function(m) paste0(LAB[[m]], " & ", paste(vapply(T2M, function(tag)
+  paste(vapply(KS, function(k) t2_cell(tag, m, k), ""), collapse = " & "), ""),
+  collapse = " & "), " \\\\")
+nt <- length(T2M)
 writetab(c(
-  "\\begin{tabular}{@{}l rrrrr@{}}", "\\toprule",
-  "Method & \\multicolumn{5}{c}{Payload size $k$ (bits)} \\\\", "\\cmidrule(lr){2-6}",
-  paste0(" & ", paste(KS, collapse = " & "), " \\\\"), "\\midrule",
-  vapply(ROWS_BL, function(m) bl_line(m, LAB[[m]]), ""), "\\midrule",
-  bl_line("mosaic", "MOSAIC (ours)"), "\\bottomrule", "\\end{tabular}"),
-  "baseline_reproduced.tex")
+  sprintf("\\begin{tabular}{@{}l %s@{}}", paste(rep("rrrrr", nt), collapse = " ")), "\\toprule",
+  paste0(" & ", paste(sprintf("\\multicolumn{5}{c}{%s}", MSHORT[T2M]), collapse = " & "), " \\\\"),
+  paste(sprintf("\\cmidrule(lr){%d-%d}", 2 + 5 * (seq_len(nt) - 1), 1 + 5 * seq_len(nt)),
+        collapse = ""),
+  paste0("Method & ", paste(rep(paste(KS, collapse = " & "), nt), collapse = " & "), " \\\\"),
+  "\\midrule", vapply(ROWS_BL, t2_line, ""), "\\midrule", t2_line("mosaic"),
+  "\\bottomrule", "\\end{tabular}"), "baseline_reproduced.tex")
+
+# match rate against payload size, one panel per generation model
+cmp_df <- do.call(rbind, lapply(T2M, function(tag) {
+  r <- mrates(tag)[, c("method", "k", "match_rate")]
+  r <- r[r$method %in% c("mosaic", ROWS_BL), ]
+  r$model <- MSHORT[[tag]]
+  r
+}))
+cmp_df$Method <- factor(LAB[cmp_df$method], levels = LAB[METH])
+cmp_df$model <- factor(cmp_df$model, levels = MSHORT[T2M])
+p <- ggplot(cmp_df, aes(k, match_rate, colour = Method, group = Method)) +
+  geom_line(linewidth = 0.6) + geom_point(size = 1.5) +
+  facet_wrap(~model, nrow = 1) +
+  scale_colour_manual(values = MCOL, name = NULL) +
+  scale_x_continuous(breaks = KS) + scale_y_continuous(limits = c(0, 100)) +
+  labs(x = "Payload size k (bits)", y = "Exact match rate (%)") +
+  theme_paper + guides(colour = guide_legend(nrow = 2))
+savefig("comparison_models.pdf", p, 7.0, 3.0)
 
 # appendix: every rate with its 95% interval, and the paired McNemar test
 ci_cell <- function(m, k) {
@@ -347,9 +425,131 @@ leads <- KS[vapply(KS, function(k) {
   p <- mcn$p_value[mcn$baseline == best & mcn$k == k]
   rate_of("mosaic", k) > max(r$match_rate) && length(p) == 1 && p < 0.05
 }, TRUE)]
-and_list <- function(x) if (length(x) <= 1) as.character(x) else
-  paste(paste(head(x, -1), collapse = ", "), "and", tail(x, 1))
+and_list <- function(x) if (length(x) < 2) as.character(x) else
+  paste0(paste(head(x, -1), collapse = ", "), if (length(x) > 2) "," else "", " and ", tail(x, 1))
 setv("lead.ks", and_list(leads))
+
+# =====================================================================
+# 3b. SECOND GENERATION MODELS  (appendix table + quoted numbers)
+# =====================================================================
+MLAB <- c(mistral = "Mistral-7B-v0.1", qwen = "Qwen2.5-7B")
+sm_rows <- c(); XM <- list()                 # XM collects per-model values for the cross-model text
+for (tag in names(SECOND)) {
+  sm <- SMD[[tag]]
+  sr <- sm$rates; smc <- sm$mcnemar
+  srate <- function(m, k) sr$match_rate[sr$method == m & sr$k == k]
+  sp <- function(m, k) smc$p_value[smc$baseline == m & smc$k == k]
+  meths <- c("mosaic", intersect(ROWS_BL, unique(smc$baseline)))    # order of Table 2
+  bl <- setdiff(meths, "mosaic")
+  key <- function(...) paste0("sm.", tag, ".", paste0(...))
+  setv(key("name"), MLAB[[tag]]); setv(key("n"), big(unique(sr$n)))
+  setv(key("nbl"), WORD[length(bl)])
+  for (m in meths) for (k in KS) { v <- srate(m, k); if (length(v)) setv(key(m, ".k", k), f1(v)) }
+  for (i in seq_len(nrow(smc))) setv(key("mc.", smc$baseline[i], ".k", smc$k[i], ".p"),
+                                     p_tex(smc$p_value[i]))
+  # measured channel and the budgets it implies (Theorem recovery, same EPS)
+  pe_m <- round(sm$pe$pooled, 3); Z_m <- 2 * sqrt(pe_m * (1 - pe_m))
+  setv(key("pe"), f3(pe_m)); setv(key("Z"), f2(Z_m))
+  for (k in KS) setv(key("budget.k", k),
+                     f0(ceiling(2 * (k * log(2) + log(1 / EPS)) / (1 - Z_m))))
+  # payloads where MOSAIC leads every baseline, significantly against the best,
+  # and where some baseline is significantly ahead of MOSAIC
+  best <- function(k) bl[which.max(vapply(bl, function(m) srate(m, k), 0))]
+  lead <- KS[vapply(KS, function(k) srate("mosaic", k) > srate(best(k), k) &&
+                      sp(best(k), k) < 0.05, TRUE)]
+  behind <- KS[vapply(KS, function(k) any(vapply(bl, function(m)
+    srate(m, k) > srate("mosaic", k) && sp(m, k) < 0.05, TRUE)), TRUE)]
+  setv(key("lead.ks"), and_list(lead)); setv(key("behind.ks"), and_list(behind))
+  setv(key("mosaic.drop"), f1(srate("mosaic", 16) - srate("mosaic", 48)))
+  XM[[tag]] <- list(pe = sm$pe$pooled, m48 = srate("mosaic", 48), lead = lead, behind = behind,
+                    gap = vapply(behind, function(k)
+                      max(vapply(bl, function(m) srate(m, k), 0)) - srate("mosaic", k), 0))
+  # the text names Janas et al. as the scheme ahead at small payloads
+  stopifnot(all(vapply(behind, function(k) all(vapply(setdiff(bl, "janas"), function(m)
+    !(srate(m, k) > srate("mosaic", k) && sp(m, k) < 0.05), TRUE)), TRUE)))
+  setv(key("behind.max"), f1(max(vapply(behind, function(k)
+    max(vapply(bl, function(m) srate(m, k), 0)) - srate("mosaic", k), 0))))
+  # the text states that MOSAIC exceeds Qu et al. at every payload size
+  if ("qu" %in% bl) {
+    stopifnot(all(vapply(KS, function(k) srate("mosaic", k) > srate("qu", k) &&
+                           sp("qu", k) < 0.05, TRUE)))
+    setv(key("qu.pmax"), p_tex(max(smc$p_value[smc$baseline == "qu"])))
+  }
+  ag <- SMAG[[tag]]
+  for (k in c(16, 48)) setv(key("medp.exp.k", k), floor(log10(ag$median_p_value[ag$k == k])))
+  setv(key("bitacc.min"), f1(min(ag$bit_accuracy)))
+  setv(key("ci.max"), f2(max((sr$ci_hi - sr$ci_lo)[sr$method == "mosaic"] / 2)))
+  setv(key("ppl.base"), f1(unique(round(ag$mean_ppl_plain, 1))))
+  setv(key("ppl.marked.min"), f1(min(ag$mean_ppl_watermarked)))
+  setv(key("ppl.marked.max"), f1(max(ag$mean_ppl_watermarked)))
+  rp <- sm$repetition
+  for (i in seq_len(nrow(rp))) setv(key("rep.", rp$method[i]), f1(rp$share50[i]))
+  # appendix table block: rates with intervals, then the paired tests
+  cell <- function(m, k) { r <- sr[sr$method == m & sr$k == k, ]
+    if (nrow(r) == 0) "NA" else sprintf("%.1f [%.1f, %.1f]", r$match_rate, r$ci_lo, r$ci_hi) }
+  mcell <- function(m, k) { r <- smc[smc$baseline == m & smc$k == k, ]
+    if (nrow(r) == 0) "NA" else sprintf("%d/%d, $%s$", r$mosaic_only, r$baseline_only, p_tex(r$p_value)) }
+  sm_rows <- c(sm_rows, if (length(sm_rows)) "\\midrule",
+    sprintf("\\multicolumn{6}{@{}l}{%s: exact match rate (\\%%) with 95\\%% bootstrap interval} \\\\",
+            MLAB[[tag]]),
+    vapply(meths, function(m) paste0(LAB[[m]], " & ", paste(vapply(KS, function(k) cell(m, k), ""),
+                                                            collapse = " & "), " \\\\"), ""),
+    "\\multicolumn{6}{@{}l}{McNemar test against MOSAIC: MOSAIC-only / baseline-only successes, exact $p$} \\\\",
+    vapply(bl, function(m) paste0(LAB[[m]], " & ", paste(vapply(KS, function(k) mcell(m, k), ""),
+                                                         collapse = " & "), " \\\\"), ""))
+}
+# across generation models: Llama-2 on the shared prompts against the others
+pe_common <- mean(diag$pe_true[diag$prompt_index < N_COMMON])
+setv("pe.common", f3(pe_common))
+Z_common <- 2 * sqrt(round(pe_common, 3) * (1 - round(pe_common, 3)))
+setv("budget.common.k48", f0(ceiling(2 * (48 * log(2) + log(1 / EPS)) / (1 - Z_common))))
+llama_behind <- KS[vapply(KS, function(k) any(vapply(ROWS_BL, function(m) {
+  v <- rate_of(m, k); p <- mcn$p_value[mcn$baseline == m & mcn$k == k]
+  length(v) == 1 && length(p) == 1 && v > rate_of("mosaic", k) && p < 0.05
+}, TRUE)), TRUE)]
+XM[["llama"]] <- list(pe = pe_common, m48 = rate_of("mosaic", 48), lead = leads,
+                      behind = llama_behind,
+                      gap = vapply(llama_behind, function(k)
+                        max(rates$match_rate[rates$k == k & rates$method %in% ROWS_BL]) -
+                          rate_of("mosaic", k), 0))
+lead_all <- Reduce(intersect, lapply(XM, `[[`, "lead"))
+stopifnot(length(lead_all) > 0)                       # the text claims a common lead
+setv("lead.all.ks", and_list(sort(lead_all)))
+setv("nmodels", WORD[length(XM)])
+behind_all <- unlist(lapply(XM, `[[`, "behind"))
+setv("behind.all.kmax", max(behind_all))
+setv("behind.all.max", f1(max(unlist(lapply(XM, `[[`, "gap")))))
+setv("behind.llama.ks", and_list(llama_behind))
+# spread of MOSAIC's 16-bit match rate across models, and the best 48-bit rate of
+# Yoo et al. on any model (shared prompts)
+m16 <- c(rate_of("mosaic", 16), vapply(SMD, function(d)
+  d$rates$match_rate[d$rates$method == "mosaic" & d$rates$k == 16], 0))
+setv("xm.k16.spread", f1(max(m16) - min(m16)))
+setv("xm.mpac.k48.max", f1(max(c(rate_of("mpac", 48), unlist(lapply(SMD, function(d)
+  d$rates$match_rate[d$rates$method == "mpac" & d$rates$k == 48]))))))
+# the text states that MOSAIC exceeds Qu et al. at every payload size on Llama-2 too
+stopifnot(all(vapply(KS, function(k) rate_of("mosaic", k) > rate_of("qu", k) &&
+                       mcn$p_value[mcn$baseline == "qu" & mcn$k == k] < 0.05, TRUE)))
+ppl_all <- c(main$ppl_mark, unlist(lapply(SMAG, `[[`, "mean_ppl_watermarked")))
+setv("ppl.all.min", f1(min(ppl_all))); setv("ppl.all.max", f1(max(ppl_all)))
+setv("bitacc.all.min", f1(min(c(main$bitacc, unlist(lapply(SMAG, `[[`, "bit_accuracy"))))))
+setv("ci.sm.max", f2(max(unlist(lapply(SMD, function(d) {
+  r <- d$rates[d$rates$method == "mosaic", ]; (r$ci_hi - r$ci_lo) / 2 })))))
+setv("medp.all.max", max(c(floor(log10(main$medp)),
+                           unlist(lapply(SMAG, function(a) floor(log10(a$median_p_value)))))))
+if (all(c("mistral", "qwen") %in% names(XM))) {
+  # the text orders the models Mistral, Llama-2, Qwen by flip rate and states
+  # that the 48-bit match rate falls in that order
+  pes <- vapply(XM[c("mistral", "llama", "qwen")], `[[`, 0, "pe")
+  m48 <- vapply(XM[c("mistral", "llama", "qwen")], `[[`, 0, "m48")
+  stopifnot(!is.unsorted(pes, strictly = TRUE), !is.unsorted(-m48, strictly = TRUE))
+}
+
+if (length(SECOND)) writetab(c(
+  "\\begin{tabular}{@{}l ccccc@{}}", "\\toprule",
+  "& \\multicolumn{5}{c}{Payload size $k$ (bits)} \\\\", "\\cmidrule(lr){2-6}",
+  paste0("Method & ", paste(KS, collapse = " & "), " \\\\"), "\\midrule",
+  sm_rows, "\\bottomrule", "\\end{tabular}"), "second_model.tex")
 
 # =====================================================================
 # 4. MOSAIC ROBUSTNESS ON THE 10% SUBSET  (figure + threshold check)
@@ -386,6 +586,9 @@ cross50 <- function(k) {
   s[j - 1] + (m[j - 1] - 50) / (m[j - 1] - m[j]) * (s[j] - s[j - 1])
 }
 for (k in c(16, 32, 48)) setv(sprintf("emp50.k%d", k), f2(cross50(k)))
+# empirical 50% crossing relative to the guaranteed substitution threshold
+ratio50 <- vapply(c(16, 32, 48), function(k) cross50(k) / thresh(k), 0)
+setv("emp50.ratio.min", f1(min(ratio50))); setv("emp50.ratio.max", f1(max(ratio50)))
 for (k in KS) {
   setv(sprintf("rob.clean.k%d", k), f1(rv("clean", 0, k)))
   for (a in c("substitution", "insertion", "deletion"))
@@ -512,6 +715,98 @@ for (m in METH) for (k in COMP_K) for (st in SETTINGS) {
 }
 
 # =====================================================================
+# 5b. ROBUSTNESS ON THE FURTHER MODELS  (cross-model figure + appendix tables)
+# =====================================================================
+RB_METH <- c("mosaic", "qu", "janas", "mpac")          # the methods run on every model
+agg_rob <- function(f) read.csv(f) %>% group_by(method, k, attack, strength) %>%
+  summarise(match = 100 * mean(match), n = n(), .groups = "drop")
+CAGG <- c(list(llama = cagg), lapply(f_comp_sm, agg_rob))
+for (tag in names(SECOND)) {
+  ca <- CAGG[[tag]]; stopifnot(all(ca$n == N_COMMON))
+  sr <- SMD[[tag]]$rates
+  for (m in setdiff(unique(ca$method), "mosaic")) {   # baselines reproduce Table 2 exactly
+    j <- merge(sr[sr$method == m, c("k", "match_rate")],
+               ca[ca$method == m & ca$attack == "clean", c("k", "match")], by = "k")
+    stopifnot(nrow(j) > 0, all(abs(j$match_rate - j$match) < 1e-9))
+  }
+  for (m in unique(ca$method)) for (k in COMP_K) for (st in SETTINGS) {
+    v <- ca$match[ca$method == m & ca$k == k & ca$attack == st[1] &
+                    abs(ca$strength - as.numeric(st[2])) < 1e-9]
+    if (length(v)) setv(sprintf("cmp.%s.%s.%s.%s.k%d", tag, m, substr(st[1], 1, 3),
+                                if (st[1] == "reordering") as.integer(as.numeric(st[2]))
+                                else round(100 * as.numeric(st[2])), k), f1(v))
+  }
+  # appendix table: every attack setting at each payload for this model
+  rows <- c()
+  for (k in COMP_K) {
+    rows <- c(rows, sprintf("\\multicolumn{%d}{@{}l}{$k = %d$} \\\\", length(RB_METH) + 1, k))
+    for (st in SETTINGS) {
+      sv <- as.numeric(st[2])
+      lab <- if (st[1] == "clean") "Clean" else if (st[1] == "reordering")
+        sprintf("%s %d", SLAB[[st[1]]], as.integer(sv)) else
+          sprintf("%s %d\\%%", SLAB[[st[1]]], round(100 * sv))
+      rows <- c(rows, paste0(lab, " & ", paste(vapply(RB_METH, function(m) {
+        v <- ca$match[ca$method == m & ca$k == k & ca$attack == st[1] & abs(ca$strength - sv) < 1e-9]
+        if (length(v)) f1(v) else "--" }, ""), collapse = " & "), " \\\\"))
+    }
+    if (k != max(COMP_K)) rows <- c(rows, "\\midrule")
+  }
+  writetab(c("\\begin{tabular}{@{}l rrrr@{}}", "\\toprule",
+             "Attack & MOSAIC & Qu & Janas & Yoo \\\\", "\\midrule", rows,
+             "\\bottomrule", "\\end{tabular}"), sprintf("robustness_%s.tex", tag))
+}
+# the robustness claims of the text, on every model: MOSAIC keeps more payloads
+# than Qu et al. under light edits and reordering at every compared payload, Qu
+# et al. keep more under 20% deletion at 32 bits, MOSAIC keeps most 32-bit
+# payloads under 5% insertion and deletion and most 48-bit payloads under
+# reordering into 10 blocks, and Janas et al. lose most 16-bit payloads under 5%
+# insertion and deletion
+LIGHT <- list(c("substitution", 0.05), c("substitution", 0.1), c("insertion", 0.05),
+              c("insertion", 0.1), c("deletion", 0.05), c("deletion", 0.1),
+              c("reordering", 2), c("reordering", 5), c("reordering", 10))
+for (tag in names(CAGG)) {
+  g <- function(m, k, a, s) { ca <- CAGG[[tag]]
+    ca$match[ca$method == m & ca$k == k & ca$attack == a & abs(ca$strength - s) < 1e-9] }
+  for (k in COMP_K) for (st in LIGHT)
+    stopifnot(g("mosaic", k, st[1], as.numeric(st[2])) > g("qu", k, st[1], as.numeric(st[2])))
+  stopifnot(g("qu", 32, "deletion", 0.2) > g("mosaic", 32, "deletion", 0.2),
+            g("mosaic", 32, "insertion", 0.05) > 50, g("mosaic", 32, "deletion", 0.05) > 50,
+            g("mosaic", 48, "reordering", 10) > 50,
+            g("janas", 16, "insertion", 0.05) < 50, g("janas", 16, "deletion", 0.05) < 50)
+}
+# MOSAIC re-decoded on this machine against the stored decisions (floating-point
+# belief propagation, as for Llama-2-7B above): largest gap in match rate
+setv("rb.redetect.maxdiff", f1(max(vapply(names(SECOND), function(tag) {
+  sr <- SMD[[tag]]$rates; sr <- sr[sr$method == "mosaic", c("k", "match_rate")]
+  j <- merge(sr, CAGG[[tag]][CAGG[[tag]]$method == "mosaic" & CAGG[[tag]]$attack == "clean",
+                             c("k", "match")], by = "k")
+  max(abs(j$match_rate - j$match)) }, 0))))
+# cross-model figure at 32 bits: the methods run on every model
+RB_K <- 32
+xr <- do.call(rbind, lapply(names(CAGG), function(tag) {
+  ca <- CAGG[[tag]] %>% filter(method %in% RB_METH, k == RB_K)
+  rbind(ca %>% filter(attack != "clean"),
+        ca %>% filter(attack == "clean") %>% select(-attack) %>%
+          tidyr::crossing(attack = c("substitution", "insertion", "deletion", "reordering")) %>%
+          mutate(strength = if_else(attack == "reordering", 1, strength))) %>%
+    mutate(model = MSHORT[[tag]])
+}))
+xr <- xr %>% mutate(x = if_else(attack == "reordering", strength, 100 * strength),
+  Method = factor(LAB[method], levels = LAB[METH]),
+  model = factor(model, levels = MSHORT[names(CAGG)]),
+  attack = factor(attack, levels = c("substitution", "insertion", "deletion", "reordering"),
+                  labels = c("Substitution (%)", "Insertion (%)", "Deletion (%)", "Reordering (blocks)")))
+p <- ggplot(xr, aes(x, match, colour = Method, group = Method)) +
+  geom_line(linewidth = 0.6) + geom_point(size = 1.4) +
+  facet_grid(model ~ attack, scales = "free_x") +
+  scale_x_continuous(breaks = function(l) if (l[2] < 12) c(1, 2, 5, 10) else c(0, 10, 20, 30)) +
+  scale_colour_manual(values = MCOL, name = NULL) +
+  scale_y_continuous(limits = c(0, 100), breaks = c(0, 50, 100)) +
+  labs(x = NULL, y = sprintf("Exact match rate at %d bits (%%)", RB_K)) + theme_paper
+savefig("robustness_models.pdf", p, 7.0, 5.0)
+setv("rb.k", RB_K)
+
+# =====================================================================
 # 6. DELTA SWEEP  (quality / robustness trade-off, k = 16 and k = 32)
 # =====================================================================
 sd <- read.csv(f_sdelta)                       # summarise_sweeps.py output
@@ -630,7 +925,6 @@ KEYING <- c(mosaic = K_WIN, cyclic = K_PREV, wang = K_PREV, mpac = K_PREV, janas
             cohen_adapted = K_POS)
 KLEV <- intersect(c(K_WIN, K_PREV, K_POS, K_BLK), KEYING)
 KCOL <- c("#000000", "#4daf4a", "#e41a1c", "#377eb8")[match(KLEV, c(K_WIN, K_PREV, K_POS, K_BLK))]
-WORD <- c("one", "two", "three", "four", "five", "six")
 prev_m  <- names(KEYING)[KEYING == K_PREV]
 other_m <- names(KEYING)[!(KEYING %in% c(K_WIN, K_PREV))]
 share_of <- function(ms) rs$share50[rs$method %in% ms]

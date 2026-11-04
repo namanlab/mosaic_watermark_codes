@@ -8,9 +8,11 @@ the method's own model-free detector. The attack randomness is seeded per
 (prompt, payload, attack, strength), so all methods face the same edit pattern
 on a given prompt (common random numbers). Stored result files are only read.
 
-Output: results/derived/robustness_comparison.csv, one row per
-(method, payload, prompt, attack, strength) with the exact-match outcome and the
-bit accuracy. No language model is loaded: only the tokenizer, the keys, and
+Output: results/derived/robustness_comparison.csv (Llama-2-7B) or
+robustness_comparison_<tag>.csv for a further model (tags of second_model.py),
+one row per (method, payload, prompt, attack, strength) with the exact-match
+outcome and the bit accuracy. Every method with a result file for the model
+enters. No language model is loaded: only the tokenizer, the keys, and
 each detector.
 
 Resource use (this runs on a 16 GB laptop): one process, no multiprocessing;
@@ -20,7 +22,7 @@ every text, and a rerun resumes from it, keeping only (method, payload, prompt)
 groups with all attack settings present. The finished file is renamed from .tmp
 at the end, and the script exits at once when the finished file exists.
 
-Usage:  python results/robustness_comparison.py
+Usage:  python results/robustness_comparison.py [model id]   (default Llama-2-7B)
 """
 import csv
 import json
@@ -39,9 +41,13 @@ import run_experiments_full as rx            # noqa: E402  attack functions
 import run_baseline_experiments as rb        # noqa: E402  baseline registry
 from stream_samples import iter_samples      # noqa: E402
 
+from second_model import SECOND_MODELS        # noqa: E402
+
 OUT = os.path.join(RES, "derived")
-MODEL = "meta-llama/Llama-2-7b-hf"
+MODEL = sys.argv[1] if len(sys.argv) > 1 else "meta-llama/Llama-2-7b-hf"
 TAG = MODEL.replace("/", "_")
+OUT_NAME = ("robustness_comparison.csv" if MODEL == "meta-llama/Llama-2-7b-hf"
+            else f"robustness_comparison_{SECOND_MODELS[MODEL]}.csv")
 MAIN = os.path.join(RES, f"opengen_main_{TAG}.json")
 BASE = os.path.join(RES, "other_models", "opengen_baseline_{}_" + TAG + ".json")
 N_COMMON = 1000
@@ -71,14 +77,33 @@ def attack(ids, name, strength, rng, vocab):
     return rx.attack_reorder(ids, int(strength), rng)
 
 
+def config_of(path):
+    """The config block at the head of a result file, without reading the samples."""
+    with open(path) as fh:
+        head = fh.read(1 << 16)
+    return json.JSONDecoder().raw_decode(head, head.index("{", head.index('"config"')))[0]
+
+
+def qu_freq_file():
+    """Frequency file of the generator's balanced map: the one its config records,
+    else the model's own. The detector must use the generator's map."""
+    from src_baselines.qu_balance import DATA_DIR, freq_file_for
+    name = config_of(BASE.format("qu")).get("qu_freq_file")
+    return os.path.join(DATA_DIR, name) if name else freq_file_for(MODEL)
+
+
 def make_detector(method, k, vocab):
     if method == "mosaic":
         from src.mosaic import MosaicWatermark
         return MosaicWatermark(MODEL, secret_key="mosaic_opengen", k_bits=k,
                                soft_mag=rx.SOFT_MAG, window=rx.WINDOW, load_model=False)
     cls = rb.METHODS[method]
-    d = cls(rb.SECRET_KEY, k, vocab) if method != "cyclic" else \
-        cls(rb.SECRET_KEY, k, vocab, rb.GAMMA)
+    if method == "cyclic":
+        d = cls(rb.SECRET_KEY, k, vocab, rb.GAMMA)
+    elif method == "qu":                       # the generator's balanced segment map
+        d = cls(rb.SECRET_KEY, k, vocab, model_name=MODEL, freq_file=qu_freq_file())
+    else:
+        d = cls(rb.SECRET_KEY, k, vocab)
     d.reconfigure(k)
     return d
 
@@ -106,15 +131,26 @@ def load_done(tmp):
     return done
 
 
+def methods():
+    """Baselines with a result file for this model, in registry order."""
+    return [m for m in rb.METHODS if os.path.exists(BASE.format(m))]
+
+
 def source_signatures():
-    """Size and modification time of every result file the comparison reads."""
-    src = {"mosaic": MAIN, **{m: BASE.format(m) for m in rb.METHODS}}
-    return {m: [os.path.getsize(p), int(os.path.getmtime(p))] for m, p in src.items()}
+    """Size and modification time of every result file the comparison reads, and
+    for Qu et al. the frequency file of the detector's map when it is not the
+    model's own."""
+    from src_baselines.qu_balance import freq_file_for
+    src = {"mosaic": MAIN, **{m: BASE.format(m) for m in methods()}}
+    sig = {m: [os.path.getsize(p), int(os.path.getmtime(p))] for m, p in src.items()}
+    if "qu" in sig and qu_freq_file() != freq_file_for(MODEL):
+        sig["qu"].append(os.path.basename(qu_freq_file()))
+    return sig
 
 
 def main():
     os.makedirs(OUT, exist_ok=True)
-    path = os.path.join(OUT, "robustness_comparison.csv")
+    path = os.path.join(OUT, OUT_NAME)
     manifest = path + ".sources.json"
     tmp = path + ".tmp"
     sig = source_signatures()
@@ -147,7 +183,7 @@ def main():
         pids[i] = tok(tok.decode(ids, skip_special_tokens=True))["input_ids"]
     del pool_rows
 
-    sources = [("mosaic", MAIN)] + [(m, BASE.format(m)) for m in rb.METHODS]
+    sources = [("mosaic", MAIN)] + [(m, BASE.format(m)) for m in methods()]
     t0, n_new = time.time(), 0
     with open(tmp, "a", newline="") as f:
         w = csv.writer(f)

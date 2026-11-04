@@ -44,7 +44,7 @@ import hashlib
 import numpy as np
 import torch
 
-from .qu_balance import cached_mapping
+from .qu_balance import DEFAULT_MODEL, cached_mapping, freq_file_for
 from .reed_solomon import ReedSolomon
 
 SALT_KEY = 35317          # their --hash_key default
@@ -74,6 +74,15 @@ def rs_params(b: int):
     return best
 
 
+def newline_id_of(tokenizer) -> int:
+    """Token id of "\n": the <0x0A> byte token of SentencePiece vocabularies
+    (13 for Llama-2 and Mistral), else the last id of the encoded newline."""
+    tid = tokenizer.convert_tokens_to_ids("<0x0A>")
+    if isinstance(tid, int) and tid != tokenizer.unk_token_id:
+        return tid
+    return tokenizer.encode("\n", add_special_tokens=False)[-1]
+
+
 def _key_int(secret: str, domain: str) -> int:
     return int.from_bytes(hashlib.sha256(f"{secret}|{domain}".encode()).digest()[:8], "little")
 
@@ -85,8 +94,12 @@ class QuSegmentWatermark:
     faithful_under_edits = True      # segment and green list keyed on the previous token
 
     def __init__(self, secret: str, k_bits: int, vocab_size: int, gamma: float = 0.5,
-                 freq=None):
+                 freq=None, model_name: str = DEFAULT_MODEL, newline_id: int = NEWLINE_ID,
+                 freq_file: str = None):
         self.V = vocab_size
+        # balanced map from this model's frequencies unless a file is given
+        self.freq_file = freq_file or freq_file_for(model_name)
+        self.newline_id = newline_id
         self.n_green = int(gamma * vocab_size)
         self.seed0 = _key_int(secret, "qu.seed") % MOD
         self.map_key = _key_int(secret, "qu.map")
@@ -99,7 +112,8 @@ class QuSegmentWatermark:
         self.n, self.kseg, self.m = rs_params(k_bits)
         self.nsym = self.n - self.kseg
         self.rs = ReedSolomon(self.m)
-        self.mapping = cached_mapping(self.n, self.map_key, self.V, freq=self._freq)
+        self.mapping = cached_mapping(self.n, self.map_key, self.V, freq=self._freq,
+                                      freq_file=self.freq_file)
         self._cw_key = self._cw = None
 
     # ------------------------------------------------------------ helpers ---
@@ -128,8 +142,8 @@ class QuSegmentWatermark:
     def logit_adjustment(self, generated_ids):
         """Their generator lowers the newline logit by 100 right after a
         generated newline."""
-        if generated_ids and generated_ids[-1] == NEWLINE_ID:
-            return [(NEWLINE_ID, -NEWLINE_PENALTY)]
+        if generated_ids and generated_ids[-1] == self.newline_id:
+            return [(self.newline_id, -NEWLINE_PENALTY)]
         return []
 
     # ---------------------------------------------------------- detection ---

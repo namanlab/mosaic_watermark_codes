@@ -63,6 +63,7 @@ mosaic_watermark_codes/
 │   ├── mpac.py                  # Yoo et al. (MPAC), NAACL 2024
 │   ├── qu_segment.py            # Qu et al., USENIX Security 2025 (released RSBH method)
 │   ├── qu_balance.py            # Qu et al.'s balanced token-to-segment map (their balance_hash/)
+│   ├── qu_token_freq.py         # token frequencies for models outside Qu et al.'s release
 │   ├── reed_solomon.py          # systematic Reed-Solomon codes over GF(2^m), m = 2..8
 │   ├── cyclic_shift.py          # Fernandez et al. (Three Bricks, key shift), WIFS 2023
 │   ├── wang_hash.py             # Wang et al. (codable watermarking, message hash), ICLR 2024
@@ -77,6 +78,7 @@ mosaic_watermark_codes/
     ├── sample_diagnostics.py    # per-sample diagnostics, common-sample rates, McNemar tests
     ├── robustness_comparison.py # all methods under the same token-level attacks
     ├── dedup_decoding.py        # MOSAIC decoding with repeated observations counted once
+    ├── second_model.py          # MOSAIC and the baselines on Mistral-7B and Qwen2.5-7B
     └── merge_main_results.R     # merges sharded main-run JSONs
 ```
 
@@ -148,6 +150,24 @@ the balanced map for each segment count and caches it as
 the Qu baseline stops with a message pointing here; every other method runs
 without it.
 
+Their release covers Llama, Falcon, and Guanaco only. For another model,
+`src_baselines/qu_token_freq.py` counts that model's tokens over the OpenGen
+prompts the evaluation never uses (index 1,000 onward) and writes
+`data/qu/token_freq_<model tag>.pkl`; its maps are cached as
+`data/qu/map_<model tag>_p<n>_key<key>.npy`. On Llama-2, a map built this way
+balances the previous-token load of the generated text as evenly as the map from
+the released file (`--check` reports both).
+
+Result files record the frequency file in their config (`qu_freq_file`), and
+`results/robustness_comparison.py` detects with the map that file gives (the
+model's own file when the field is absent), so the detector always applies the
+generator's map.
+
+```bash
+python -m src_baselines.qu_token_freq --model mistralai/Mistral-7B-v0.1
+python -m src_baselines.qu_token_freq --check
+```
+
 ---
 
 ## Quick start (the MOSAIC API)
@@ -189,6 +209,11 @@ it is unavailable, those `w` checks are lost and the rest decode as usual.
 
 See [`REPRODUCE.md`](REPRODUCE.md) for the step-by-step walkthrough. In brief:
 
+Both runners take any Hugging Face causal LM as `--model` (the paper uses
+Llama-2-7B, Mistral-7B-v0.1, and Qwen2.5-7B, all in half precision), and
+`TORCH_DTYPE` sets the generation model's precision on a GPU: `fp16` (default),
+`bf16`, or `fp32`.
+
 ### MOSAIC (`run_experiments_full.py`)
 
 The harness is split into stages selected by `--experiment`; each loads at most
@@ -198,7 +223,7 @@ and resumes from its own output.
 | `--experiment` | what it does | model(s) |
 |---|---|---|
 | `generate` | prompts + watermark; saves ids, marked/plain text, per-prompt match | generation model |
-| `quality` / `quality-perplexity` | base-model perplexity (Llama-3.1 oracle) + MAUVE | oracle + gpt2-large |
+| `quality` / `quality-perplexity` | oracle perplexity (Llama-3.1) + MAUVE | oracle + gpt2-large |
 | `robust-substitution` / `robust-insertion` / `robust-deletion` / `robust-reordering` | one token-level attack each (model-free) | none |
 | `robust-paraphrase` | DIPPER paraphrase attack (generates paraphrases, then detects) | DIPPER |
 | `robust` | runs all attacks; results merge into one file | DIPPER |
@@ -241,7 +266,7 @@ MOSAIC_QUICK=1 python run_baseline_experiments.py --method all --model gpt2   # 
 ```
 
 `--method` is one of `mpac`, `qu`, `cyclic`, `wang`, `cohen`, `cohen_adapted`,
-`janas`, or `all`.
+`janas`, a comma-separated list of them, or `all`.
 Each run writes `results/opengen_baseline_<method>_<model>.json` and resumes from
 it when interrupted, so remove an older file of the same name before switching
 implementations. The analysis reads baseline results from
@@ -282,8 +307,9 @@ called only when its output is missing or older than its inputs, with outputs in
 | `compute_match_ci.py` | `main_bootstrap_ci.json` | 95% bootstrap CI of the match rate over prompts |
 | `summarise_sweeps.py` | `sweep_delta_summary.csv`, `sweep_tokens_records.csv` | compact sweep summaries |
 | `sample_diagnostics.py` | `mosaic_sample_diagnostics.csv`, `baseline_sample_repetition.csv`, `common_sample.json` | per-sample repetition and channel diagnostics; match rates on the shared prompts with CIs and McNemar tests |
-| `robustness_comparison.py` | `robustness_comparison.csv` | every method under the same substitution, insertion, deletion, and reordering attacks; recomputes only methods whose result files changed |
+| `robustness_comparison.py [model id]` | `robustness_comparison.csv` (Llama-2-7B), `robustness_comparison_<tag>.csv` | every method under the same substitution, insertion, deletion, and reordering attacks, per model; recomputes only methods whose result files changed |
 | `dedup_decoding.py` | `mosaic_dedup_decoding.csv` | MOSAIC decoding with each repeated (window, token) observation counted once |
+| `second_model.py` | `second_model_<tag>.json` | for each further generation model with results: match rates with CIs, McNemar tests against MOSAIC, measured flip rate, repetition |
 
 All helpers run in a single process, stream the large result files one sample
 at a time (`stream_samples.py`), and load no language model, so the pipeline

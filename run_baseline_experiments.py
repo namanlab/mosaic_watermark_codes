@@ -27,10 +27,17 @@ in two variants:
 Usage:
   python run_baseline_experiments.py --method all   --model meta-llama/Llama-2-7b-hf
   python run_baseline_experiments.py --method mpac  --model meta-llama/Llama-2-7b-hf
+  python run_baseline_experiments.py --method qu,janas,mpac --model mistralai/Mistral-7B-v0.1
+
+--method takes one method, a comma-separated list, or all. Any Hugging Face
+causal LM works as --model; outputs are named by the model. For a model outside
+Qu et al.'s release, build its token frequency file first
+(python -m src_baselines.qu_token_freq --model <model id>).
 
 Env knobs (same semantics as run_experiments_full.py):
   MAIN_MAX_PROMPTS (0 = all, else first N in order)   CHECKPOINT_EVERY (10)
   LOG_EVERY (10)   MOSAIC_QUICK=1 (3 prompts, gpt2-friendly, _quick suffix)
+  TORCH_DTYPE (generation model on a GPU: fp16 default, bf16 for Qwen2.5, fp32)
 
 Output: results/opengen_baseline_<method>_<model>.json
   {config, aggregate: [{k, match_rate, bit_accuracy, n}], samples: [...]}
@@ -53,7 +60,8 @@ import pyarrow.parquet as pq
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from src_baselines.common import BaselineLM                     # noqa: E402
 from src_baselines.mpac import MPACWatermark                    # noqa: E402
-from src_baselines.qu_segment import QuSegmentWatermark         # noqa: E402
+from src_baselines.qu_segment import QuSegmentWatermark, newline_id_of  # noqa: E402
+from src_baselines.qu_balance import freq_file_for                   # noqa: E402
 from src_baselines.cyclic_shift import CyclicShiftWatermark     # noqa: E402
 from src_baselines.wang_hash import WangHashWatermark           # noqa: E402
 from src_baselines.cohen import CohenWatermark                  # noqa: E402
@@ -172,6 +180,7 @@ def save(model, method, ks, samples, t0):
     payload = {"config": {"model": model, "method": method, "delta": DELTA,
                           "gamma": GAMMA, "temperature": TEMPERATURE,
                           "top_p": TOP_P, "tokens": MAX_NEW_TOKENS,
+                          "torch_dtype": os.environ.get("TORCH_DTYPE", "fp16"),
                           "watermark_sizes": ks, "dataset": "OpenGen",
                           "context": "previous token (h=1)",
                           # which implementation produced this file; the analysis
@@ -180,7 +189,10 @@ def save(model, method, ks, samples, t0):
                                                     "reimplementation"),
                           "faithful_under_edits": getattr(METHODS[method],
                                                           "faithful_under_edits", None),
-                          "n_prompts": len(set(s["prompt_index"] for s in samples))},
+                          "n_prompts": len(set(s["prompt_index"] for s in samples)),
+                          # frequency file of Qu et al.'s balanced map (the detector needs it)
+                          **({"qu_freq_file": os.path.basename(freq_file_for(model))}
+                             if method == "qu" else {})},
                "aggregate": aggregate(samples, ks), "samples": samples,
                "elapsed_sec": time.time() - t0}
     _atomic_write(out_path(model, f"opengen_baseline_{method}"), payload)
@@ -193,8 +205,13 @@ def run_method(lm, model, method):
     if skipped:
         log.info("[%s] payloads %s skipped: extraction infeasible (2^k scan)",
                  method, skipped)
-    wm = cls(SECRET_KEY, ks[0], lm.vocab_size) if method != "cyclic" else \
-        cls(SECRET_KEY, ks[0], lm.vocab_size, GAMMA)
+    if method == "cyclic":
+        wm = cls(SECRET_KEY, ks[0], lm.vocab_size, GAMMA)
+    elif method == "qu":         # balanced map and newline rule of this model's tokenizer
+        wm = cls(SECRET_KEY, ks[0], lm.vocab_size, model_name=model,
+                 newline_id=newline_id_of(lm.tokenizer))
+    else:
+        wm = cls(SECRET_KEY, ks[0], lm.vocab_size)
 
     pool_n = len(load_pool())
     idx = main_indices(pool_n)
@@ -258,15 +275,19 @@ def run_method(lm, model, method):
 
 def main():
     ap = argparse.ArgumentParser(description="Baseline watermark match-rate experiments")
-    ap.add_argument("--method", required=True, choices=list(METHODS) + ["all"])
+    ap.add_argument("--method", required=True,
+                    help="one of %s, a comma-separated list, or all" % ", ".join(METHODS))
     ap.add_argument("--model", default="meta-llama/Llama-2-7b-hf")
     args = ap.parse_args()
 
-    setup_logging(args.method, args.model)
+    setup_logging(args.method.replace(",", "+"), args.model)
     if not os.path.exists(DATA_PATH):
         log.error("OpenGen parquet not found at %s", DATA_PATH)
         sys.exit(1)
-    methods = list(METHODS) if args.method == "all" else [args.method]
+    methods = list(METHODS) if args.method == "all" else args.method.split(",")
+    unknown = [m for m in methods if m not in METHODS]
+    if unknown:
+        ap.error("unknown method(s) %s; choose from %s or all" % (unknown, list(METHODS)))
     log.info("methods=%s model=%s MAIN_MAX_PROMPTS=%s QUICK=%s delta=%s "
              "temp=%s top_p=%s tokens=%d", methods, args.model,
              MAIN_MAX_PROMPTS or "ALL", QUICK, DELTA, TEMPERATURE, TOP_P,

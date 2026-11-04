@@ -68,6 +68,48 @@ Place the outputs where the analysis expects them:
 - Baseline files go to `results/other_models/`:
   `opengen_baseline_<method>_<model>.json`.
 
+### Further models (Mistral-7B-v0.1, Qwen2.5-7B)
+
+The same scripts run any Hugging Face causal LM through `--model`, and every
+output is named by the model. The paper reports MOSAIC and the baselines of
+Yoo et al., Qu et al., and Janas et al. on the 1,000 shared prompts of
+Mistral-7B-v0.1 and Qwen2.5-7B, next to Llama-2-7B in Tables 1 and 2:
+
+```
+python -m src_baselines.qu_token_freq --model mistralai/Mistral-7B-v0.1   # CPU, tokenizer only
+MAIN_MAX_PROMPTS=1000 python run_experiments_full.py --experiment generate --model mistralai/Mistral-7B-v0.1
+MAIN_MAX_PROMPTS=1000 python run_experiments_full.py --experiment quality  --model mistralai/Mistral-7B-v0.1
+MAIN_MAX_PROMPTS=1000 python run_baseline_experiments.py --method qu,janas,mpac --model mistralai/Mistral-7B-v0.1
+```
+
+`mistralai/Mistral-7B-v0.1` is gated on the Hugging Face Hub: accept its terms
+on the model page with the account whose token is used for Llama-2.
+
+Qwen2.5-7B runs the same way; the paper's runs use half precision (the default),
+and the model needs about 15 GB of GPU memory, so use a GPU with at least 24 GB:
+
+```
+python -m src_baselines.qu_token_freq --model Qwen/Qwen2.5-7B   # CPU, tokenizer only
+MAIN_MAX_PROMPTS=1000 python run_experiments_full.py --experiment generate --model Qwen/Qwen2.5-7B
+MAIN_MAX_PROMPTS=1000 python run_experiments_full.py --experiment quality  --model Qwen/Qwen2.5-7B
+MAIN_MAX_PROMPTS=1000 python run_baseline_experiments.py --method qu,janas,mpac --model Qwen/Qwen2.5-7B
+```
+
+`TORCH_DTYPE` sets the precision of the generation model on a GPU (`fp16` by
+default, `bf16`, or `fp32`; Qwen recommends `bf16`) and is recorded in each
+result's `config`; the perplexity oracle keeps its own precision, so
+perplexities stay comparable across generators.
+
+`make_paper_assets.R` picks up each further model once its MOSAIC result file is
+in `results/` and its baseline files are in `results/other_models/`. The
+robustness comparison on these models runs on CPU, one process per model
+(about 4 hours for Mistral-7B and 10 hours for Qwen2.5-7B, under 0.5 GB each):
+
+```
+python results/robustness_comparison.py mistralai/Mistral-7B-v0.1
+python results/robustness_comparison.py Qwen/Qwen2.5-7B
+```
+
 ## 4. Regenerating tables, figures, and quoted numbers (laptop)
 
 ```
@@ -85,8 +127,9 @@ regenerated, only the outputs that depend on it are recomputed.
 | `compute_match_ci.py` | `../main_bootstrap_ci.json` | 95% bootstrap CI column of Table 1 |
 | `summarise_sweeps.py` | `sweep_delta_summary.csv`, `sweep_tokens_records.csv` | delta trade-off and token-budget figures |
 | `sample_diagnostics.py` | `mosaic_sample_diagnostics.csv`, `baseline_sample_repetition.csv`, `common_sample.json` | small-payload analysis; Table 2 and its paired tests |
-| `robustness_comparison.py` | `robustness_comparison.csv` | robustness comparison figure and table |
+| `robustness_comparison.py [model id]` | `robustness_comparison.csv`, `robustness_comparison_<tag>.csv` | robustness comparison figures and tables (Llama-2-7B by default; Mistral-7B and Qwen2.5-7B with their model id) |
 | `dedup_decoding.py` | `mosaic_dedup_decoding.csv` | decoding with repeated observations counted once |
+| `second_model.py` | `second_model_<tag>.json` | Mistral-7B and Qwen2.5-7B: rates, paired tests, measured flip rate, repetition |
 
 Resource use: every helper runs in a single process, reads the large result
 files one sample at a time (`stream_samples.py`), and loads no language model;
@@ -99,11 +142,12 @@ Paper artifact -> source:
 |------------------------------------------------|----------------------------------------------|
 | Table 1 (main results, 95% CI, perplexity)     | `make_paper_assets.R`, `compute_match_ci.py` |
 | Table 2 (baselines on the shared prompts)      | `make_paper_assets.R`, `sample_diagnostics.py` |
-| Robustness comparison (figure and table)       | `make_paper_assets.R`, `robustness_comparison.py` |
+| Robustness comparison (figures and tables)     | `make_paper_assets.R`, `robustness_comparison.py` |
 | MOSAIC robustness on the 10% subset            | `make_paper_assets.R`                        |
 | Token-budget heatmap, delta trade-off          | `make_paper_assets.R`, `summarise_sweeps.py` |
 | Small-payload analysis (figures and tables)    | `make_paper_assets.R`, `sample_diagnostics.py`, `dedup_decoding.py` |
 | Paired McNemar tests and bootstrap intervals   | `sample_diagnostics.py`                      |
+| Tables 1-2 and Figure 2 across three models    | `make_paper_assets.R`, `second_model.py`     |
 | Every number quoted in the text                | `make_paper_assets.R` -> `numbers.tex`       |
 
 The bootstrap intervals use 10,000 resamples over prompts with seed 20240611.

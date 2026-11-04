@@ -29,7 +29,21 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(HERE), "data", "qu")
-FREQ_FILE = os.path.join(DATA_DIR, "token_freq_llama.pkl")
+DEFAULT_MODEL = "meta-llama/Llama-2-7b-hf"
+# frequency files of Qu et al.'s data release; any other model uses
+# token_freq_<model tag>.pkl built by qu_token_freq.py
+RELEASED_FREQ = {DEFAULT_MODEL: "token_freq_llama.pkl"}
+FREQ_FILE = os.path.join(DATA_DIR, RELEASED_FREQ[DEFAULT_MODEL])
+
+
+def model_tag(model_name: str) -> str:
+    """Short lower-case tag of a Hugging Face model id, e.g. mistral-7b-v0.1."""
+    return model_name.rstrip("/").split("/")[-1].lower()
+
+
+def freq_file_for(model_name: str = DEFAULT_MODEL) -> str:
+    name = RELEASED_FREQ.get(model_name, f"token_freq_{model_tag(model_name)}.pkl")
+    return os.path.join(DATA_DIR, name)
 
 
 def seed_from_key(key: int) -> int:
@@ -119,25 +133,34 @@ def build_mapping(freq, p: int, key: int) -> np.ndarray:
 
 def load_freq(path: str = FREQ_FILE) -> np.ndarray:
     if not os.path.exists(path):
+        if os.path.basename(path) in RELEASED_FREQ.values():
+            hint = ("download data_share.zip from the link in the README of "
+                    "github.com/randomizedtree/segment-watermark and copy "
+                    f"{os.path.basename(path)} to data/qu/.")
+        else:
+            hint = ("build it with: python -m src_baselines.qu_token_freq "
+                    "--model <model id>")
         raise FileNotFoundError(
-            f"{path} not found. Qu et al.'s balanced map needs their token "
-            "frequency file: download data_share.zip from the link in the README "
-            "of github.com/randomizedtree/segment-watermark and copy "
-            "token_freq_llama.pkl to data/qu/.")
+            f"{path} not found. Qu et al.'s balanced map needs a token frequency "
+            f"file: {hint}")
     with open(path, "rb") as fh:
         return np.asarray(pickle.load(fh), dtype=np.int64)
 
 
-def cached_mapping(p: int, key: int, vocab_size: int, freq=None) -> np.ndarray:
-    """Build once per (p, key) from the frequency file and cache under data/qu/."""
+def cached_mapping(p: int, key: int, vocab_size: int, freq=None,
+                   freq_file: str = FREQ_FILE) -> np.ndarray:
+    """Build once per (frequency file, p, key) and cache under data/qu/. Maps
+    built from the released Llama file keep their original cache name."""
     if freq is not None:                             # explicit frequencies (tests)
         return build_mapping(freq, p, key)
     os.makedirs(DATA_DIR, exist_ok=True)
-    path = os.path.join(DATA_DIR, f"map_p{p}_key{key}.npy")
+    stem = os.path.splitext(os.path.basename(freq_file))[0]
+    tag = "" if freq_file == FREQ_FILE else stem.replace("token_freq_", "") + "_"
+    path = os.path.join(DATA_DIR, f"map_{tag}p{p}_key{key}.npy")
     if os.path.exists(path):
         mapping = np.load(path)
     else:
-        mapping = build_mapping(load_freq(), p, key)
+        mapping = build_mapping(load_freq(freq_file), p, key)
         np.save(path, mapping)
     assert len(mapping) >= vocab_size, "frequency file shorter than the vocabulary"
     return mapping

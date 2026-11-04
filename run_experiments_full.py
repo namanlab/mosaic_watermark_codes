@@ -18,7 +18,15 @@ Dependencies: stage 1 first; stages 2, 3, 4 all need stage 1. robust-paraphrase
 self-generates its paraphrases (DIPPER), so it has no extra prerequisite.
 
 Env knobs: MAIN_MAX_PROMPTS, SUBSET_FRAC, ORACLE_MODEL, PARAPHRASE_MODEL,
-PARAPHRASE_TOK, QUANTIZE_8BIT. Smoke test: prepend MOSAIC_QUICK=1.
+PARAPHRASE_TOK, QUANTIZE_8BIT, TORCH_DTYPE (generation model on a GPU: fp16 by
+default, bf16 for Qwen2.5; the oracle and paraphraser stay as loaded by
+_load_kwargs). Smoke test: prepend MOSAIC_QUICK=1.
+
+Any Hugging Face causal LM works as --model, and outputs are named by the model.
+The second-model check runs stages 1 and 2 on the 1,000 shared prompts:
+  MAIN_MAX_PROMPTS=1000 python run_experiments_full.py --experiment generate --model mistralai/Mistral-7B-v0.1
+  MAIN_MAX_PROMPTS=1000 python run_experiments_full.py --experiment quality  --model mistralai/Mistral-7B-v0.1
+and the same with TORCH_DTYPE=bf16 and --model Qwen/Qwen2.5-7B for Qwen.
 """
 
 import argparse
@@ -444,6 +452,7 @@ def _save_main(model, samples, t0):
     payload = {"config": {"model": model, "delta": DELTA, "gamma": GAMMA,
                           "temperature": TEMPERATURE, "top_p": TOP_P, "window": WINDOW,
                           "tokens": MAX_NEW_TOKENS,
+                          "torch_dtype": os.environ.get("TORCH_DTYPE", "fp16"),
                           "n_prompts": len(set(s["prompt_index"] for s in samples)),
                           "watermark_sizes": WATERMARK_SIZES, "dataset": "OpenGen"},
                "aggregate": _main_aggregate(samples), "samples": samples,

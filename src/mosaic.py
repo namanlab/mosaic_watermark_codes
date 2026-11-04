@@ -32,6 +32,7 @@ is what lets the watermark be a set rather than a sequence.
 """
 
 import math
+import os
 from typing import Dict, List, Optional
 
 import logging
@@ -46,6 +47,18 @@ from .fountain_bp import robust_soliton, bp_decode
 # Library logger. A NullHandler keeps direct use silent unless the application
 # configures logging (e.g. run_experiments.py adds console + file handlers).
 log = logging.getLogger("mosaic")
+
+# Precision of the generation model on a GPU: TORCH_DTYPE=fp16 (default, as in
+# the Llama-2 and Mistral runs), bf16 (recommended for Qwen2.5), or fp32. The
+# CPU always runs in fp32.
+DTYPES = {"fp16": torch.float16, "bf16": torch.bfloat16, "fp32": torch.float32}
+
+
+def generation_dtype() -> torch.dtype:
+    name = os.environ.get("TORCH_DTYPE", "fp16")
+    if name not in DTYPES:
+        raise ValueError(f"TORCH_DTYPE={name!r}; choose one of {sorted(DTYPES)}")
+    return DTYPES[name]
 log.addHandler(logging.NullHandler())
 
 
@@ -89,7 +102,7 @@ class MosaicWatermark:
             log.info("loading model: %s on %s", model_name, device)
             kwargs = {}
             if device in ("cuda", "mps"):
-                kwargs["torch_dtype"] = torch.float16
+                kwargs["torch_dtype"] = generation_dtype()
             self.model = AutoModelForCausalLM.from_pretrained(model_name, **kwargs)
             self.model.to(device)
             self.model.eval()
